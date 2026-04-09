@@ -3,7 +3,7 @@ name: Deploy Docs
 on:
   push:
     branches: [main]
-    paths: ['docs/**']
+    paths: ['site/**']
   workflow_dispatch:
 
 permissions:
@@ -20,16 +20,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install mdbook
+      - name: Install Zola
         run: |
-          curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.4.40/mdbook-v0.4.40-x86_64-unknown-linux-gnu.tar.gz | tar xz
-          chmod +x mdbook
-      - name: Build book
-        run: ./mdbook build docs
+          curl -sSL https://github.com/getzola/zola/releases/download/v0.19.2/zola-v0.19.2-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          chmod +x zola
+      - name: Build site
+        run: ./zola --root site build --output-dir ../public --base-url https://dirmacs.github.io/deagle
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/book
+          path: public
 
   deploy:
     needs: build

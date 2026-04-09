@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page.title }} — dstack{% endblock %}
+
+{% block content %}
+<article>
+  {{ page.content | safe }}
+</article>
+{% endblock %}

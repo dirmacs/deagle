@@ -1,0 +1,13 @@
+base_url = "https://dirmacs.github.io/deagle"
+title = "deagle"
+description = "Rust-native code intelligence — tree-sitter + SQLite, single binary"
+compile_sass = true
+build_search_index = false
+generate_feeds = false
+minify_html = true
+
+[markdown]
+highlight_code = true
+highlight_theme = "base16-ocean-dark"
+
+[extra]

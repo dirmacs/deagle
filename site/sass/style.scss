@@ -1,0 +1,299 @@
+// DIRMACS dark theme
+$bg: #0d1117;
+$bg-card: #161b22;
+$border: #30363d;
+$text: #c9d1d9;
+$text-muted: #8b949e;
+$text-bright: #f0f6fc;
+$primary: #58a6ff;
+$primary-hover: #79c0ff;
+$secondary: #3fb950;
+$accent: #f97316;
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: $bg;
+  color: $text;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: $primary;
+  text-decoration: none;
+  &:hover { color: $primary-hover; }
+}
+
+h1, h2, h3, h4 { color: $text-bright; font-weight: 700; }
+
+// Nav
+nav {
+  border-bottom: 1px solid $border;
+  padding: 1rem 0;
+  .nav-inner {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 0 1.5rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .logo {
+    font-size: 1.25rem;
+    font-weight: 800;
+    color: $text-bright;
+    letter-spacing: -0.5px;
+    &:hover { color: $primary; }
+  }
+  .nav-links {
+    display: flex;
+    gap: 1.5rem;
+    a {
+      color: $text-muted;
+      font-size: 0.9rem;
+      &:hover { color: $primary; }
+    }
+  }
+}
+
+.logo-d {
+  color: $primary;
+  font-weight: 900;
+}
+
+// Main
+main {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 1.5rem;
+}
+
+// Hero
+.hero {
+  text-align: center;
+  padding: 4rem 0 3rem;
+  position: relative;
+  .hero-logo-wrap {
+    display: block;
+    margin-bottom: 1.5rem;
+  }
+  .hero-logo {
+    display: block;
+    margin: 0 auto;
+    filter: drop-shadow(0 0 24px rgba($primary, 0.15));
+  }
+  .hero-badge {
+    display: inline-block;
+    background: rgba($primary, 0.15);
+    color: $primary;
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 0.25rem 0.75rem;
+    border-radius: 999px;
+    border: 1px solid rgba($primary, 0.3);
+    letter-spacing: 0.5px;
+    margin: 0.5rem 0 0.75rem;
+  }
+  h1 {
+    font-size: 3.5rem;
+    letter-spacing: -2px;
+    margin-bottom: 0.5rem;
+  }
+  .tagline {
+    font-size: 1.25rem;
+    color: $text;
+    margin-bottom: 0.25rem;
+  }
+  .subtitle {
+    font-size: 0.95rem;
+    color: $text-muted;
+    margin-bottom: 2rem;
+  }
+  .hero-actions {
+    display: flex;
+    gap: 1rem;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+}
+
+// Buttons
+.btn {
+  display: inline-block;
+  padding: 0.6rem 1.5rem;
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  transition: all 0.15s;
+}
+.btn-primary {
+  background: $primary;
+  color: $bg;
+  &:hover { background: $primary-hover; color: $bg; }
+}
+.btn-secondary {
+  background: $bg-card;
+  color: $text;
+  border: 1px solid $border;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.85rem;
+  &:hover { border-color: $primary; color: $primary; }
+}
+
+// Features
+.features {
+  padding: 2rem 0 3rem;
+}
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1.5rem;
+}
+.feature {
+  background: $bg-card;
+  border: 1px solid $border;
+  border-radius: 8px;
+  padding: 1.5rem;
+  .feature-icon { font-size: 1.5rem; margin-bottom: 0.75rem; }
+  h3 { font-size: 1rem; margin-bottom: 0.5rem; }
+  p { font-size: 0.85rem; color: $text-muted; line-height: 1.5; }
+}
+
+// Install
+.install {
+  padding: 2rem 0;
+  h2 { margin-bottom: 1rem; }
+  p { color: $text-muted; margin: 0.75rem 0; font-size: 0.9rem; }
+}
+
+// Code
+pre, code {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+code {
+  background: $bg-card;
+  color: #e6edf3;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+pre {
+  background: $bg-card !important;
+  border: 1px solid $border;
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  overflow-x: auto;
+  margin: 0.75rem 0;
+  code {
+    background: transparent;
+    padding: 0;
+    font-size: 0.85rem;
+  }
+}
+
+// Commands
+.commands {
+  padding: 2rem 0;
+  h2 { margin-bottom: 1rem; }
+}
+.command-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.command {
+  display: flex;
+  align-items: baseline;
+  gap: 1rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid rgba($border, 0.5);
+  code {
+    white-space: nowrap;
+    font-size: 0.8rem;
+  }
+  span {
+    color: $text-muted;
+    font-size: 0.85rem;
+  }
+}
+
+// Plugin
+.plugin {
+  padding: 2rem 0 3rem;
+  h2 { margin-bottom: 0.5rem; }
+  > p { color: $text-muted; margin-bottom: 1.25rem; font-size: 0.9rem; }
+}
+.plugin-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 0.75rem;
+}
+.plugin-item {
+  background: $bg-card;
+  border: 1px solid $border;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  font-size: 0.85rem;
+  color: $text-muted;
+  strong { color: $secondary; }
+}
+
+// Article (story page etc)
+article {
+  padding: 3rem 0;
+  h1 { font-size: 2rem; margin-bottom: 1.5rem; }
+  h2 { font-size: 1.5rem; margin-top: 2.5rem; margin-bottom: 0.75rem; }
+  h3 { font-size: 1.15rem; margin-top: 2rem; margin-bottom: 0.5rem; color: $text; }
+  p { margin-bottom: 1rem; color: $text; }
+  ul, ol { margin: 0.75rem 0; padding-left: 1.5rem; color: $text; }
+  li { margin-bottom: 0.35rem; }
+  blockquote {
+    border-left: 3px solid $primary;
+    padding: 0.5rem 1rem;
+    margin: 1rem 0;
+    color: $text-muted;
+    background: rgba($primary, 0.05);
+    border-radius: 0 6px 6px 0;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    th, td {
+      padding: 0.5rem 0.75rem;
+      border: 1px solid $border;
+      text-align: left;
+      font-size: 0.85rem;
+    }
+    th { background: $bg-card; color: $text-bright; font-weight: 600; }
+    td { color: $text; }
+  }
+  strong { color: $text-bright; }
+  em { color: $text-muted; }
+}
+
+// Footer
+footer {
+  border-top: 1px solid $border;
+  padding: 1.5rem 0;
+  margin-top: 2rem;
+  .footer-inner {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 0 1.5rem;
+    text-align: center;
+    font-size: 0.8rem;
+    color: $text-muted;
+  }
+  .sep { margin: 0 0.5rem; }
+}
+
+// Responsive
+@media (max-width: 640px) {
+  .hero h1 { font-size: 2.5rem; }
+  .feature-grid { grid-template-columns: 1fr; }
+  nav .nav-links { gap: 0.75rem; }
+  .command { flex-direction: column; gap: 0.25rem; }
+}

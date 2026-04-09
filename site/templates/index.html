@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+
+{% block title %}deagle — Rust-native Code Intelligence{% endblock %}
+
+{% block content %}
+<section class="hero">
+  <h1><span class="logo-d">d</span>eagle</h1>
+  <div class="hero-badge">v0.1.0</div>
+  <p class="tagline">Rust-native code intelligence</p>
+  <p class="subtitle">Tree-sitter parsing · SQLite graph · Single binary · No Docker</p>
+  <div class="hero-actions">
+    <a href="https://github.com/dirmacs/deagle" class="btn btn-primary">GitHub</a>
+    <a href="https://crates.io/crates/deagle-cli" class="btn btn-secondary">cargo install deagle-cli</a>
+  </div>
+</section>
+
+<section class="features">
+  <div class="feature-grid">
+    <div class="feature">
+      <div class="feature-icon">🔍</div>
+      <h3>Code Graph</h3>
+      <p>Index functions, structs, traits, methods, imports into a queryable SQLite graph. Search by name, kind, language.</p>
+    </div>
+    <div class="feature">
+      <div class="feature-icon">🌳</div>
+      <h3>Tree-Sitter Parsing</h3>
+      <p>Multi-language AST extraction. Rust first, Python and Go next. Precise definitions, methods, and imports.</p>
+    </div>
+    <div class="feature">
+      <div class="feature-icon">⚡</div>
+      <h3>Single Binary</h3>
+      <p>No Docker, no ArangoDB, no external services. SQLite bundled. ~10MB binary indexes thousands of files in milliseconds.</p>
+    </div>
+    <div class="feature">
+      <div class="feature-icon">🧬</div>
+      <h3>Semantic Search</h3>
+      <p>Optional ares-vector integration for embedding-based code search. Find code by meaning, not just name.</p>
+    </div>
+  </div>
+</section>
+
+<section class="install">
+  <h2>Install</h2>
+  <pre><code>cargo install deagle-cli</code></pre>
+  <p>Or from source:</p>
+  <pre><code>git clone https://github.com/dirmacs/deagle && cd deagle
+cargo install --path crates/deagle-cli</code></pre>
+</section>
+
+<section class="commands">
+  <h2>Commands</h2>
+  <div class="command-grid">
+    <div class="command">
+      <code>deagle map &lt;dir&gt;</code>
+      <span>Index a codebase into the graph</span>
+    </div>
+    <div class="command">
+      <code>deagle search &lt;query&gt;</code>
+      <span>Search symbols by name</span>
+    </div>
+    <div class="command">
+      <code>deagle search &lt;query&gt; --kind struct</code>
+      <span>Filter by entity kind</span>
+    </div>
+    <div class="command">
+      <code>deagle stats</code>
+      <span>Show graph statistics</span>
+    </div>
+  </div>
+</section>
+
+<section class="plugin">
+  <h2>Architecture</h2>
+  <p>Three-crate workspace with clean separation of concerns.</p>
+  <div class="plugin-grid">
+    <div class="plugin-item"><strong>deagle-core</strong> — Graph types (Node, Edge) + SQLite storage + semantic search</div>
+    <div class="plugin-item"><strong>deagle-parse</strong> — Tree-sitter parsers per language (Rust, Python, Go)</div>
+    <div class="plugin-item"><strong>deagle-cli</strong> — CLI commands: map, search, stats</div>
+  </div>
+</section>
+
+{{ section.content | safe }}
+{% endblock %}
