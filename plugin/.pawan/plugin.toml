@@ -1,0 +1,15 @@
+# deagle plugin configuration for Pawan coding agent
+
+[plugin]
+name = "deagle"
+version = "0.1.0"
+description = "Rust-native code intelligence"
+
+[skills]
+path = "../skills"
+
+[commands]
+path = "../commands"
+
+[hooks]
+session_start = "../hooks/session-start"

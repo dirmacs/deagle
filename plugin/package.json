@@ -1,0 +1,13 @@
+{
+  "name": "deagle",
+  "version": "0.1.0",
+  "description": "Rust-native code intelligence",
+  "author": "dirmacs",
+  "license": "MIT",
+  "homepage": "https://github.com/dirmacs/deagle",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dirmacs/deagle"
+  },
+  "keywords": ["dstack-plugin"]
+}

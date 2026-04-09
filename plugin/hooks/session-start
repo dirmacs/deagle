@@ -1,0 +1,3 @@
+#!/bin/bash
+# Session bootstrap — loaded at conversation start
+echo '{"hookSpecificOutput": "dstack plugin loaded. Use /skill list to see available skills."}'

@@ -1,0 +1,13 @@
+{
+  "name": "deagle",
+  "displayName": "deagle",
+  "description": "Rust-native code intelligence",
+  "version": "0.1.0",
+  "author": {
+    "name": "dirmacs"
+  },
+  "license": "MIT",
+  "skills": "./skills/",
+  "commands": "./commands/",
+  "hooks": "./hooks/hooks-cursor.json"
+}
