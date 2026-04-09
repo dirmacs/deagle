@@ -49,6 +49,18 @@ enum Commands {
         #[arg(default_value = ".")]
         dir: PathBuf,
     },
+    /// Fast regex text search (powered by ripgrep)
+    #[cfg(feature = "text-search")]
+    Rg {
+        /// Regex pattern
+        pattern: String,
+        /// Directory to search
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+        /// Filter by language (e.g., "rust", "python")
+        #[arg(long)]
+        lang: Option<String>,
+    },
 }
 
 fn main() {
@@ -60,6 +72,8 @@ fn main() {
         Commands::Stats => cmd_stats(&cli.db),
         #[cfg(feature = "pattern")]
         Commands::Grep { pattern, dir } => cmd_grep(&pattern, &dir),
+        #[cfg(feature = "text-search")]
+        Commands::Rg { pattern, dir, lang } => cmd_rg(&pattern, &dir, lang.as_deref()),
     };
 
     if let Err(e) = result {
@@ -233,5 +247,36 @@ fn grep_walk(root: &Path, dir: &Path, pattern: &str, total: &mut usize) -> Resul
             }
         }
     }
+    Ok(())
+}
+
+#[cfg(feature = "text-search")]
+fn cmd_rg(pattern: &str, dir: &Path, lang: Option<&str>) -> Result<(), String> {
+    use deagle_parse::text_search::search_directory;
+
+    let lang_filter = lang.map(|l| Language::from_extension(match l {
+        "rust" => "rs",
+        "python" => "py",
+        "go" => "go",
+        "typescript" => "ts",
+        "javascript" => "js",
+        "java" => "java",
+        "cpp" | "c++" => "cpp",
+        "c" => "c",
+        other => other,
+    }));
+
+    let matches = search_directory(dir, pattern, lang_filter)
+        .map_err(|e| format!("Search failed: {}", e))?;
+
+    if matches.is_empty() {
+        eprintln!("No matches for '{}'", pattern);
+        return Ok(());
+    }
+
+    for m in &matches {
+        println!("{}:{}: {}", m.file_path, m.line_number, m.line);
+    }
+    eprintln!("\n{} match(es)", matches.len());
     Ok(())
 }

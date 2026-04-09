@@ -11,8 +11,9 @@ name = "deagle"
 path = "src/main.rs"
 
 [features]
-default = ["pattern"]
+default = ["pattern", "text-search"]
 pattern = ["deagle-parse/pattern"]
+text-search = ["deagle-parse/text-search"]
 
 [dependencies]
 deagle-core = { version = "0.1.0", path = "../deagle-core" }

@@ -5,7 +5,7 @@
 //!
 //! Requires the `pattern` feature flag.
 
-use deagle_core::{DeagleError, Language, Result};
+use deagle_core::{Language, Result};
 use std::path::Path;
 
 /// A pattern match result with location info.

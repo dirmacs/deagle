@@ -10,6 +10,8 @@ description = "Tree-sitter based multi-language code parser for deagle"
 default = []
 # Structural pattern matching via ast-grep
 pattern = ["dep:ast-grep-core", "dep:ast-grep-language"]
+# Fast regex text search via ripgrep library crates
+text-search = ["dep:grep-regex", "dep:grep-searcher", "dep:grep-matcher"]
 
 [dependencies]
 deagle-core = { version = "0.1.0", path = "../deagle-core" }
@@ -19,3 +21,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 ast-grep-core = { version = "0.42", optional = true }
 ast-grep-language = { version = "0.42", optional = true }
+grep-regex = { version = "0.1", optional = true }
+grep-searcher = { version = "0.1", optional = true }
+grep-matcher = { version = "0.1", optional = true }

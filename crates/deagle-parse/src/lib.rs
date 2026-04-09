@@ -12,6 +12,9 @@ pub mod rust_parser;
 #[cfg(feature = "pattern")]
 pub mod pattern;
 
+#[cfg(feature = "text-search")]
+pub mod text_search;
+
 use deagle_core::{Language, Node, Result};
 use std::path::Path;
 
