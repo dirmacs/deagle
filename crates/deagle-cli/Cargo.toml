@@ -1,0 +1,18 @@
+[package]
+name = "deagle-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLI for deagle code intelligence — map, search, explain"
+
+[[bin]]
+name = "deagle"
+path = "src/main.rs"
+
+[dependencies]
+deagle-core = { version = "0.1.0", path = "../deagle-core" }
+deagle-parse = { version = "0.1.0", path = "../deagle-parse" }
+clap = { version = "4", features = ["derive"] }
+serde = { workspace = true }
+serde_json = { workspace = true }

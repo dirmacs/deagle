@@ -1,0 +1,13 @@
+[package]
+name = "deagle-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core types and graph storage for deagle code intelligence"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+rusqlite = { version = "0.34", features = ["bundled"] }

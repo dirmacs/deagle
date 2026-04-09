@@ -1,0 +1,14 @@
+[package]
+name = "deagle-parse"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tree-sitter based multi-language code parser for deagle"
+
+[dependencies]
+deagle-core = { version = "0.1.0", path = "../deagle-core" }
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
+serde = { workspace = true }
+serde_json = { workspace = true }

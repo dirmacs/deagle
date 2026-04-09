@@ -1,0 +1,494 @@
+//! deagle-core — graph types and SQLite storage for code intelligence.
+//!
+//! Defines the code graph model: nodes (functions, classes, modules),
+//! edges (calls, imports, contains, inherits), and SQLite-backed persistence.
+
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+/// A node in the code graph — represents a code entity.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Node {
+    /// Unique identifier (auto-generated)
+    pub id: i64,
+    /// Entity name (function name, class name, etc.)
+    pub name: String,
+    /// Entity kind
+    pub kind: NodeKind,
+    /// Programming language
+    pub language: Language,
+    /// Source file path (relative to repo root)
+    pub file_path: String,
+    /// Start line number (1-indexed)
+    pub line_start: u32,
+    /// End line number (1-indexed)
+    pub line_end: u32,
+    /// Optional source code excerpt
+    pub content: Option<String>,
+}
+
+/// Kind of code entity.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeKind {
+    File,
+    Module,
+    Function,
+    Method,
+    Class,
+    Struct,
+    Enum,
+    Trait,
+    Interface,
+    Constant,
+    Variable,
+    TypeAlias,
+    Import,
+}
+
+impl std::fmt::Display for NodeKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::File => "file",
+            Self::Module => "module",
+            Self::Function => "function",
+            Self::Method => "method",
+            Self::Class => "class",
+            Self::Struct => "struct",
+            Self::Enum => "enum",
+            Self::Trait => "trait",
+            Self::Interface => "interface",
+            Self::Constant => "constant",
+            Self::Variable => "variable",
+            Self::TypeAlias => "type_alias",
+            Self::Import => "import",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+/// Supported programming languages.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "lowercase")]
+pub enum Language {
+    Rust,
+    Python,
+    Go,
+    TypeScript,
+    JavaScript,
+    Java,
+    Cpp,
+    C,
+    Unknown,
+}
+
+impl Language {
+    /// Detect language from file extension.
+    pub fn from_extension(ext: &str) -> Self {
+        match ext.to_lowercase().as_str() {
+            "rs" => Self::Rust,
+            "py" => Self::Python,
+            "go" => Self::Go,
+            "ts" | "tsx" => Self::TypeScript,
+            "js" | "jsx" | "mjs" | "cjs" => Self::JavaScript,
+            "java" => Self::Java,
+            "cpp" | "cc" | "cxx" | "hpp" => Self::Cpp,
+            "c" | "h" => Self::C,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// File extensions for this language.
+    pub fn extensions(&self) -> &[&str] {
+        match self {
+            Self::Rust => &["rs"],
+            Self::Python => &["py"],
+            Self::Go => &["go"],
+            Self::TypeScript => &["ts", "tsx"],
+            Self::JavaScript => &["js", "jsx", "mjs", "cjs"],
+            Self::Java => &["java"],
+            Self::Cpp => &["cpp", "cc", "cxx", "hpp"],
+            Self::C => &["c", "h"],
+            Self::Unknown => &[],
+        }
+    }
+}
+
+impl std::fmt::Display for Language {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Rust => "rust",
+            Self::Python => "python",
+            Self::Go => "go",
+            Self::TypeScript => "typescript",
+            Self::JavaScript => "javascript",
+            Self::Java => "java",
+            Self::Cpp => "cpp",
+            Self::C => "c",
+            Self::Unknown => "unknown",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+/// An edge in the code graph — represents a relationship between entities.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Edge {
+    /// Source node ID
+    pub from_id: i64,
+    /// Target node ID
+    pub to_id: i64,
+    /// Relationship type
+    pub kind: EdgeKind,
+    /// Confidence score (0.0–1.0) for inferred edges
+    pub confidence: f32,
+}
+
+/// Kind of relationship between code entities.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeKind {
+    /// Function/method call
+    Calls,
+    /// Import/use statement
+    Imports,
+    /// Parent contains child (file→function, class→method)
+    Contains,
+    /// Class/struct inheritance
+    Inherits,
+    /// Interface/trait implementation
+    Implements,
+    /// Type reference (parameter type, return type, field type)
+    References,
+    /// Module/package dependency
+    DependsOn,
+}
+
+impl std::fmt::Display for EdgeKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Calls => "calls",
+            Self::Imports => "imports",
+            Self::Contains => "contains",
+            Self::Inherits => "inherits",
+            Self::Implements => "implements",
+            Self::References => "references",
+            Self::DependsOn => "depends_on",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+/// Errors from deagle operations.
+#[derive(Debug, thiserror::Error)]
+pub enum DeagleError {
+    #[error("Database error: {0}")]
+    Database(#[from] rusqlite::Error),
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Parse error in {file}: {message}")]
+    Parse { file: String, message: String },
+    #[error("{0}")]
+    Other(String),
+}
+
+pub type Result<T> = std::result::Result<T, DeagleError>;
+
+/// SQLite-backed code graph database.
+pub struct GraphDb {
+    conn: rusqlite::Connection,
+}
+
+impl GraphDb {
+    /// Open or create a graph database at the given path.
+    pub fn open(path: &std::path::Path) -> Result<Self> {
+        let conn = rusqlite::Connection::open(path)?;
+        let db = Self { conn };
+        db.init_schema()?;
+        Ok(db)
+    }
+
+    /// Create an in-memory graph database (for testing).
+    pub fn in_memory() -> Result<Self> {
+        let conn = rusqlite::Connection::open_in_memory()?;
+        let db = Self { conn };
+        db.init_schema()?;
+        Ok(db)
+    }
+
+    fn init_schema(&self) -> Result<()> {
+        self.conn.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS nodes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                language TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                line_start INTEGER NOT NULL,
+                line_end INTEGER NOT NULL,
+                content TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_nodes_name ON nodes(name);
+            CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
+            CREATE INDEX IF NOT EXISTS idx_nodes_file ON nodes(file_path);
+
+            CREATE TABLE IF NOT EXISTS edges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_id INTEGER NOT NULL REFERENCES nodes(id),
+                to_id INTEGER NOT NULL REFERENCES nodes(id),
+                kind TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 1.0
+            );
+            CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(from_id);
+            CREATE INDEX IF NOT EXISTS idx_edges_to ON edges(to_id);
+            CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
+
+            CREATE TABLE IF NOT EXISTS metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            "
+        )?;
+        Ok(())
+    }
+
+    /// Insert a node and return its ID.
+    pub fn insert_node(&self, node: &Node) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO nodes (name, kind, language, file_path, line_start, line_end, content)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                node.name,
+                node.kind.to_string(),
+                node.language.to_string(),
+                node.file_path,
+                node.line_start,
+                node.line_end,
+                node.content,
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Insert an edge.
+    pub fn insert_edge(&self, edge: &Edge) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO edges (from_id, to_id, kind, confidence) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![edge.from_id, edge.to_id, edge.kind.to_string(), edge.confidence],
+        )?;
+        Ok(())
+    }
+
+    /// Search nodes by name (case-insensitive substring match).
+    pub fn search_nodes(&self, query: &str) -> Result<Vec<Node>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, kind, language, file_path, line_start, line_end, content
+             FROM nodes WHERE name LIKE ?1 ORDER BY name"
+        )?;
+        let pattern = format!("%{}%", query);
+        let rows = stmt.query_map([&pattern], |row| {
+            Ok(Node {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                kind: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(2)?))
+                    .unwrap_or(NodeKind::Function),
+                language: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(3)?))
+                    .unwrap_or(Language::Unknown),
+                file_path: row.get(4)?,
+                line_start: row.get(5)?,
+                line_end: row.get(6)?,
+                content: row.get(7)?,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(DeagleError::from)
+    }
+
+    /// Get all edges from a node (outgoing relationships).
+    pub fn edges_from(&self, node_id: i64) -> Result<Vec<Edge>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT from_id, to_id, kind, confidence FROM edges WHERE from_id = ?1"
+        )?;
+        let rows = stmt.query_map([node_id], |row| {
+            Ok(Edge {
+                from_id: row.get(0)?,
+                to_id: row.get(1)?,
+                kind: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(2)?))
+                    .unwrap_or(EdgeKind::Calls),
+                confidence: row.get(3)?,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(DeagleError::from)
+    }
+
+    /// Get total node count.
+    pub fn node_count(&self) -> Result<usize> {
+        let count: i64 = self.conn.query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0))?;
+        Ok(count as usize)
+    }
+
+    /// Get total edge count.
+    pub fn edge_count(&self) -> Result<usize> {
+        let count: i64 = self.conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))?;
+        Ok(count as usize)
+    }
+
+    /// Clear all data (for re-indexing).
+    pub fn clear(&self) -> Result<()> {
+        self.conn.execute_batch("DELETE FROM edges; DELETE FROM nodes;")?;
+        Ok(())
+    }
+
+    /// Get the database file path.
+    pub fn path(&self) -> Option<PathBuf> {
+        self.conn.path().map(PathBuf::from)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_language_from_extension() {
+        assert_eq!(Language::from_extension("rs"), Language::Rust);
+        assert_eq!(Language::from_extension("py"), Language::Python);
+        assert_eq!(Language::from_extension("go"), Language::Go);
+        assert_eq!(Language::from_extension("ts"), Language::TypeScript);
+        assert_eq!(Language::from_extension("tsx"), Language::TypeScript);
+        assert_eq!(Language::from_extension("js"), Language::JavaScript);
+        assert_eq!(Language::from_extension("java"), Language::Java);
+        assert_eq!(Language::from_extension("cpp"), Language::Cpp);
+        assert_eq!(Language::from_extension("c"), Language::C);
+        assert_eq!(Language::from_extension("xyz"), Language::Unknown);
+    }
+
+    #[test]
+    fn test_language_display() {
+        assert_eq!(Language::Rust.to_string(), "rust");
+        assert_eq!(Language::Python.to_string(), "python");
+    }
+
+    #[test]
+    fn test_node_kind_display() {
+        assert_eq!(NodeKind::Function.to_string(), "function");
+        assert_eq!(NodeKind::Struct.to_string(), "struct");
+        assert_eq!(NodeKind::TypeAlias.to_string(), "type_alias");
+    }
+
+    #[test]
+    fn test_edge_kind_display() {
+        assert_eq!(EdgeKind::Calls.to_string(), "calls");
+        assert_eq!(EdgeKind::Imports.to_string(), "imports");
+        assert_eq!(EdgeKind::Contains.to_string(), "contains");
+    }
+
+    #[test]
+    fn test_graph_db_in_memory() {
+        let db = GraphDb::in_memory().unwrap();
+        assert_eq!(db.node_count().unwrap(), 0);
+        assert_eq!(db.edge_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_insert_and_search_node() {
+        let db = GraphDb::in_memory().unwrap();
+        let node = Node {
+            id: 0,
+            name: "process_request".to_string(),
+            kind: NodeKind::Function,
+            language: Language::Rust,
+            file_path: "src/handler.rs".to_string(),
+            line_start: 42,
+            line_end: 68,
+            content: Some("pub fn process_request() {}".to_string()),
+        };
+        let id = db.insert_node(&node).unwrap();
+        assert!(id > 0);
+        assert_eq!(db.node_count().unwrap(), 1);
+
+        let results = db.search_nodes("process").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "process_request");
+        assert_eq!(results[0].kind, NodeKind::Function);
+        assert_eq!(results[0].language, Language::Rust);
+    }
+
+    #[test]
+    fn test_insert_edge_and_query() {
+        let db = GraphDb::in_memory().unwrap();
+        let n1 = Node {
+            id: 0, name: "main".into(), kind: NodeKind::Function,
+            language: Language::Rust, file_path: "src/main.rs".into(),
+            line_start: 1, line_end: 10, content: None,
+        };
+        let n2 = Node {
+            id: 0, name: "handler".into(), kind: NodeKind::Function,
+            language: Language::Rust, file_path: "src/lib.rs".into(),
+            line_start: 5, line_end: 20, content: None,
+        };
+        let id1 = db.insert_node(&n1).unwrap();
+        let id2 = db.insert_node(&n2).unwrap();
+
+        let edge = Edge {
+            from_id: id1, to_id: id2,
+            kind: EdgeKind::Calls, confidence: 1.0,
+        };
+        db.insert_edge(&edge).unwrap();
+        assert_eq!(db.edge_count().unwrap(), 1);
+
+        let edges = db.edges_from(id1).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].to_id, id2);
+        assert_eq!(edges[0].kind, EdgeKind::Calls);
+    }
+
+    #[test]
+    fn test_search_case_insensitive() {
+        let db = GraphDb::in_memory().unwrap();
+        let node = Node {
+            id: 0, name: "MyStruct".into(), kind: NodeKind::Struct,
+            language: Language::Rust, file_path: "src/types.rs".into(),
+            line_start: 1, line_end: 5, content: None,
+        };
+        db.insert_node(&node).unwrap();
+
+        let results = db.search_nodes("mystruct").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_clear_db() {
+        let db = GraphDb::in_memory().unwrap();
+        let node = Node {
+            id: 0, name: "test".into(), kind: NodeKind::Function,
+            language: Language::Rust, file_path: "t.rs".into(),
+            line_start: 1, line_end: 1, content: None,
+        };
+        db.insert_node(&node).unwrap();
+        assert_eq!(db.node_count().unwrap(), 1);
+        db.clear().unwrap();
+        assert_eq!(db.node_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_node_serialization() {
+        let node = Node {
+            id: 1, name: "test_fn".into(), kind: NodeKind::Function,
+            language: Language::Python, file_path: "app.py".into(),
+            line_start: 10, line_end: 25, content: Some("def test_fn(): pass".into()),
+        };
+        let json = serde_json::to_string(&node).unwrap();
+        let parsed: Node = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.name, "test_fn");
+        assert_eq!(parsed.kind, NodeKind::Function);
+        assert_eq!(parsed.language, Language::Python);
+    }
+
+    #[test]
+    fn test_language_extensions() {
+        assert!(Language::Rust.extensions().contains(&"rs"));
+        assert!(Language::TypeScript.extensions().contains(&"tsx"));
+        assert!(Language::Unknown.extensions().is_empty());
+    }
+}
