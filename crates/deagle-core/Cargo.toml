@@ -6,8 +6,17 @@ license.workspace = true
 repository.workspace = true
 description = "Core types and graph storage for deagle code intelligence"
 
+[features]
+default = []
+# Semantic code search via ares-vector (DIRMACS OSS stack)
+semantic = ["dep:ares-vector"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 rusqlite = { version = "0.34", features = ["bundled"] }
+ares-vector = { version = "0.1", features = ["serde"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

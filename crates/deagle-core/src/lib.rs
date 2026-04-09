@@ -2,6 +2,13 @@
 //!
 //! Defines the code graph model: nodes (functions, classes, modules),
 //! edges (calls, imports, contains, inherits), and SQLite-backed persistence.
+//!
+//! ## Feature Flags
+//!
+//! - `semantic` — enables semantic code search via [ares-vector](https://crates.io/crates/ares-vector)
+
+#[cfg(feature = "semantic")]
+pub mod semantic;
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
