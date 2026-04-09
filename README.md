@@ -1,8 +1,13 @@
-# deagle
+<p align="center">
+  <img src="docs/img/deagle-logo.svg" width="128" alt="deagle — Rust-native Code Intelligence">
+</p>
 
-Rust-native code intelligence. Single binary, no Docker, no external services.
+<h1 align="center">deagle</h1>
 
-Built by [DIRMACS](https://dirmacs.com). Replaces [ix](https://github.com/ix-infrastructure/Ix) with a pure Rust implementation.
+<p align="center">
+  Rust-native code intelligence. Single binary, no Docker, no external services.<br>
+  Built by <a href="https://dirmacs.com">DIRMACS</a>. <strong><a href="https://dirmacs.github.io/deagle">Documentation</a></strong>
+</p>
 
 ## Features
 
