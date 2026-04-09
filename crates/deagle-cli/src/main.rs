@@ -40,6 +40,15 @@ enum Commands {
     },
     /// Show graph statistics
     Stats,
+    /// Structural pattern search (powered by ast-grep)
+    #[cfg(feature = "pattern")]
+    Grep {
+        /// AST pattern (e.g., "$X.unwrap()", "fn $NAME() { $$$ }")
+        pattern: String,
+        /// Directory to search
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+    },
 }
 
 fn main() {
@@ -49,6 +58,8 @@ fn main() {
         Commands::Map { dir } => cmd_map(&cli.db, &dir),
         Commands::Search { query, kind } => cmd_search(&cli.db, &query, kind.as_deref()),
         Commands::Stats => cmd_stats(&cli.db),
+        #[cfg(feature = "pattern")]
+        Commands::Grep { pattern, dir } => cmd_grep(&pattern, &dir),
     };
 
     if let Err(e) = result {
@@ -164,5 +175,63 @@ fn cmd_stats(db_path: &Path) -> Result<(), String> {
     println!("Database: {}", db_path.display());
     println!("Nodes:    {}", nodes);
     println!("Edges:    {}", edges);
+    Ok(())
+}
+
+#[cfg(feature = "pattern")]
+fn cmd_grep(pattern: &str, dir: &Path) -> Result<(), String> {
+    if !dir.exists() {
+        return Err(format!("Directory not found: {}", dir.display()));
+    }
+
+    eprintln!("Searching for pattern: {}", pattern);
+
+    let mut total = 0;
+    grep_walk(dir, dir, pattern, &mut total)?;
+
+    if total == 0 {
+        eprintln!("No matches found");
+    } else {
+        eprintln!("\n{} match(es)", total);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "pattern")]
+fn grep_walk(root: &Path, dir: &Path, pattern: &str, total: &mut usize) -> Result<(), String> {
+    use deagle_parse::pattern::search_pattern;
+    let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        if path.is_dir() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name.starts_with('.') || name == "target" || name == "node_modules" || name == "vendor" {
+                continue;
+            }
+            grep_walk(root, &path, pattern, total)?;
+            continue;
+        }
+
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let lang = Language::from_extension(ext);
+        if lang == Language::Unknown {
+            continue;
+        }
+
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        if content.is_empty() {
+            continue;
+        }
+
+        let rel_path = path.strip_prefix(root).unwrap_or(&path);
+        if let Ok(matches) = search_pattern(rel_path, &content, pattern, lang) {
+            for m in &matches {
+                println!("{}:{}: {}", m.file_path, m.line_start, m.text.lines().next().unwrap_or(""));
+                *total += 1;
+            }
+        }
+    }
     Ok(())
 }

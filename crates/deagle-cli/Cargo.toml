@@ -10,6 +10,10 @@ description = "CLI for deagle code intelligence — map, search, explain"
 name = "deagle"
 path = "src/main.rs"
 
+[features]
+default = ["pattern"]
+pattern = ["deagle-parse/pattern"]
+
 [dependencies]
 deagle-core = { version = "0.1.0", path = "../deagle-core" }
 deagle-parse = { version = "0.1.0", path = "../deagle-parse" }

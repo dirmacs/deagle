@@ -2,8 +2,15 @@
 //!
 //! Extracts code entities (functions, structs, traits, impls, imports)
 //! from source files using tree-sitter grammars.
+//!
+//! ## Feature Flags
+//!
+//! - `pattern` — structural pattern matching via [ast-grep-core](https://crates.io/crates/ast-grep-core)
 
 pub mod rust_parser;
+
+#[cfg(feature = "pattern")]
+pub mod pattern;
 
 use deagle_core::{Language, Node, Result};
 use std::path::Path;
