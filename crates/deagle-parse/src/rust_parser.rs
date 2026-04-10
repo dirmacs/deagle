@@ -272,4 +272,62 @@ pub fn main() {
         assert_eq!(traits.len(), 1);
         assert_eq!(traits[0].name, "Processor");
     }
+
+    #[test]
+    fn test_parse_rust_multibyte_content_no_panic() {
+        // Regression test: content with multi-byte UTF-8 chars near the 500-byte
+        // truncation boundary must not panic. This was a real bug found by dogfooding
+        // deagle on the ARES codebase (rust_parser panicked on → arrows).
+        let arrow_fn = format!(
+            "fn extract_name(node: tree_sitter::Node, source: &str) {} String {{\n{}\n    match kind {{\n{}\n    }}\n}}",
+            "→",
+            "    // 日本語コメント with emoji 🦀 and arrows → ← ↑ ↓".repeat(10),
+            "        _ => None,\n".repeat(5),
+        );
+        let path = PathBuf::from("unicode.rs");
+        // Must not panic — the old code would panic slicing mid-char
+        let result = parse(&path, &arrow_fn);
+        assert!(result.is_ok(), "parsing multi-byte content should not panic");
+        let nodes = result.unwrap();
+        // Should find at least the file node
+        assert!(!nodes.is_empty());
+    }
+
+    #[test]
+    fn test_parse_rust_long_function_truncates_content() {
+        // Function body > 500 bytes should be truncated with "..."
+        let body = "    let x = 1;\n".repeat(50); // ~750 bytes
+        let code = format!("fn long_function() {{\n{}}}\n", body);
+        let path = PathBuf::from("long.rs");
+        let nodes = parse(&path, &code).unwrap();
+        let fns: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+        assert_eq!(fns.len(), 1);
+        assert_eq!(fns[0].name, "long_function");
+        if let Some(content) = &fns[0].content {
+            assert!(content.ends_with("..."), "long content should be truncated");
+            assert!(content.len() <= 503, "truncated content should be <= 503 bytes");
+        }
+    }
+
+    #[test]
+    fn test_parse_rust_edges_contains() {
+        let path = PathBuf::from("test.rs");
+        let result = parse_with_edges(&path, SAMPLE_RUST).unwrap();
+        assert!(!result.edges.is_empty(), "should have contains edges");
+        // All edges should be Contains (file contains entities)
+        for &(from, _, ref kind) in &result.edges {
+            assert_eq!(from, 0, "edges should originate from file node");
+            assert_eq!(*kind, deagle_core::EdgeKind::Contains);
+        }
+    }
+
+    #[test]
+    fn test_parse_rust_file_node() {
+        let path = PathBuf::from("myfile.rs");
+        let nodes = parse(&path, "fn hello() {}").unwrap();
+        let file_nodes: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::File).collect();
+        assert_eq!(file_nodes.len(), 1);
+        assert_eq!(file_nodes[0].name, "myfile.rs");
+        assert_eq!(file_nodes[0].language, Language::Rust);
+    }
 }
