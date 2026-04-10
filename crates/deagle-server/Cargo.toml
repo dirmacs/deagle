@@ -1,0 +1,24 @@
+[package]
+name = "deagle-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "HTTP API + MCP server for deagle code intelligence"
+
+[[bin]]
+name = "deagle-serve"
+path = "src/main.rs"
+
+[dependencies]
+deagle-core = { version = "0.1.0", path = "../deagle-core" }
+deagle-parse = { version = "0.1.0", path = "../deagle-parse", features = ["pattern", "text-search"] }
+axum = { version = "0.8", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ignore = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower = "0.5"

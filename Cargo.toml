@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/deagle-core", "crates/deagle-parse", "crates/deagle-cli"]
+members = ["crates/deagle-core", "crates/deagle-parse", "crates/deagle-cli", "crates/deagle-server"]
 
 [workspace.package]
 version = "0.1.0"
