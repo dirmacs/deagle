@@ -29,6 +29,9 @@ enum Commands {
         /// Directory to index
         #[arg(default_value = ".")]
         dir: PathBuf,
+        /// Force full re-index (skip incremental hash check)
+        #[arg(long)]
+        force: bool,
     },
     /// Search for symbols by name
     Search {
@@ -76,7 +79,7 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Commands::Map { dir } => cmd_map(&cli.db, &dir),
+        Commands::Map { dir, force } => cmd_map(&cli.db, &dir, force),
         Commands::Search { query, kind, fuzzy } => cmd_search(&cli.db, &query, kind.as_deref(), fuzzy),
         Commands::Stats => cmd_stats(&cli.db),
         Commands::Loc { dir } => cmd_loc(&dir),
@@ -92,7 +95,7 @@ fn main() {
     }
 }
 
-fn cmd_map(db_path: &Path, dir: &Path) -> Result<(), String> {
+fn cmd_map(db_path: &Path, dir: &Path, force: bool) -> Result<(), String> {
     use deagle_core::Edge;
     use rayon::prelude::*;
 
@@ -101,9 +104,13 @@ fn cmd_map(db_path: &Path, dir: &Path) -> Result<(), String> {
     }
 
     let db = GraphDb::open(db_path).map_err(|e| format!("Failed to open db: {}", e))?;
-    db.clear().map_err(|e| format!("Failed to clear db: {}", e))?;
 
-    eprintln!("Indexing {}...", dir.display());
+    if force {
+        db.clear().map_err(|e| format!("Failed to clear db: {}", e))?;
+        eprintln!("Full re-index of {}...", dir.display());
+    } else {
+        eprintln!("Incremental index of {}...", dir.display());
+    }
 
     // Collect file paths first (ignore-aware)
     let files: Vec<_> = ignore::WalkBuilder::new(dir)
@@ -117,15 +124,32 @@ fn cmd_map(db_path: &Path, dir: &Path) -> Result<(), String> {
         })
         .collect();
 
-    // Parse in parallel with rayon
-    let results: Vec<_> = files.par_iter().filter_map(|entry| {
+    // Pre-filter: check hashes sequentially (SQLite not thread-safe), then parse in parallel
+    let files_to_parse: Vec<_> = files.iter().filter(|entry| {
+        if force { return true; }
+        let path = entry.path();
+        let rel_path = path.strip_prefix(dir).unwrap_or(path);
+        let rel_str = rel_path.to_string_lossy();
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) if !c.is_empty() => c,
+            _ => return false,
+        };
+        db.needs_reindex(&rel_str, &content).unwrap_or(true)
+    }).collect();
+
+    // Parse changed files in parallel with rayon
+    let results: Vec<_> = files_to_parse.par_iter().filter_map(|entry| {
         let path = entry.path();
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let lang = Language::from_extension(ext);
         let content = std::fs::read_to_string(path).ok()?;
         if content.is_empty() { return None; }
         let rel_path = path.strip_prefix(dir).unwrap_or(path);
-        deagle_parse::parse_file_with_edges(rel_path, &content, lang).ok()
+        let rel_str = rel_path.to_string_lossy().to_string();
+
+        deagle_parse::parse_file_with_edges(rel_path, &content, lang)
+            .ok()
+            .map(|r| (rel_str, content, r))
     }).collect();
 
     // Insert into DB sequentially (SQLite is single-writer)
@@ -133,8 +157,14 @@ fn cmd_map(db_path: &Path, dir: &Path) -> Result<(), String> {
     let mut node_count = 0;
     let mut edge_count = 0;
 
-    for result in &results {
+    for (rel_path, content, result) in &results {
         if result.nodes.is_empty() { continue; }
+
+        // Incremental: remove old data for this file before re-inserting
+        if !force {
+            let _ = db.remove_file(rel_path);
+        }
+
         file_count += 1;
 
         // Insert nodes and track their DB IDs
@@ -146,6 +176,9 @@ fn cmd_map(db_path: &Path, dir: &Path) -> Result<(), String> {
             }
         }
         node_count += result.nodes.len();
+
+        // Store file hash for incremental indexing
+        let _ = db.store_file_hash(rel_path, content);
 
         // Insert edges using DB IDs
         for &(from_idx, to_idx, ref kind) in &result.edges {
@@ -162,7 +195,13 @@ fn cmd_map(db_path: &Path, dir: &Path) -> Result<(), String> {
         }
     }
 
-    eprintln!("Indexed {} files, {} entities, {} edges", file_count, node_count, edge_count);
+    let total_files = files.len();
+    let skipped = total_files - file_count;
+    if skipped > 0 {
+        eprintln!("Indexed {} files ({} unchanged, skipped), {} entities, {} edges", file_count, skipped, node_count, edge_count);
+    } else {
+        eprintln!("Indexed {} files, {} entities, {} edges", file_count, node_count, edge_count);
+    }
     eprintln!("Database: {}", db_path.display());
     Ok(())
 }

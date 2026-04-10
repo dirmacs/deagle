@@ -255,6 +255,12 @@ impl GraphDb {
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS file_hashes (
+                file_path TEXT PRIMARY KEY,
+                content_hash TEXT NOT NULL,
+                indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
             "
         )?;
         Ok(())
@@ -383,13 +389,61 @@ impl GraphDb {
 
     /// Clear all data (for re-indexing).
     pub fn clear(&self) -> Result<()> {
-        self.conn.execute_batch("DELETE FROM edges; DELETE FROM nodes;")?;
+        self.conn.execute_batch("DELETE FROM edges; DELETE FROM nodes; DELETE FROM file_hashes;")?;
         Ok(())
     }
 
     /// Get the database file path.
     pub fn path(&self) -> Option<PathBuf> {
         self.conn.path().map(PathBuf::from)
+    }
+
+    /// Compute SHA-256 hash of content (first 16 hex chars).
+    pub fn content_hash(content: &str) -> String {
+        use sha2::{Sha256, Digest};
+        let hash = Sha256::digest(content.as_bytes());
+        hash.iter().take(8).map(|b| format!("{:02x}", b)).collect()
+    }
+
+    /// Check if a file needs re-indexing (hash changed or new file).
+    pub fn needs_reindex(&self, file_path: &str, content: &str) -> Result<bool> {
+        let current_hash = Self::content_hash(content);
+        let stored: Option<String> = self.conn.query_row(
+            "SELECT content_hash FROM file_hashes WHERE file_path = ?1",
+            [file_path],
+            |row| row.get(0),
+        ).ok();
+
+        Ok(stored.as_deref() != Some(&current_hash))
+    }
+
+    /// Store file hash after indexing.
+    pub fn store_file_hash(&self, file_path: &str, content: &str) -> Result<()> {
+        let hash = Self::content_hash(content);
+        self.conn.execute(
+            "INSERT OR REPLACE INTO file_hashes (file_path, content_hash) VALUES (?1, ?2)",
+            rusqlite::params![file_path, hash],
+        )?;
+        Ok(())
+    }
+
+    /// Remove nodes and edges for a specific file (for re-indexing).
+    pub fn remove_file(&self, file_path: &str) -> Result<()> {
+        // Get node IDs for this file
+        let mut stmt = self.conn.prepare("SELECT id FROM nodes WHERE file_path = ?1")?;
+        let ids: Vec<i64> = stmt.query_map([file_path], |row| row.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // Delete edges referencing these nodes
+        for id in &ids {
+            self.conn.execute("DELETE FROM edges WHERE from_id = ?1 OR to_id = ?1", [id])?;
+        }
+        // Delete nodes
+        self.conn.execute("DELETE FROM nodes WHERE file_path = ?1", [file_path])?;
+        // Delete hash
+        self.conn.execute("DELETE FROM file_hashes WHERE file_path = ?1", [file_path])?;
+        Ok(())
     }
 }
 
