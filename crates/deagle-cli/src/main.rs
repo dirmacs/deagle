@@ -95,34 +95,18 @@ fn cmd_map(db_path: &Path, dir: &Path) -> Result<(), String> {
 
     let mut file_count = 0;
     let mut node_count = 0;
-    walk_and_parse(dir, dir, &db, &mut file_count, &mut node_count)
-        .map_err(|e| format!("Failed to index: {}", e))?;
 
-    eprintln!("Indexed {} files, {} entities", file_count, node_count);
-    eprintln!("Database: {}", db_path.display());
-    Ok(())
-}
+    // Use `ignore` crate for .gitignore-aware walking (replaces manual skip logic)
+    let walker = ignore::WalkBuilder::new(dir)
+        .hidden(true)       // skip hidden files/dirs
+        .git_ignore(true)   // respect .gitignore
+        .git_global(true)   // respect global gitignore
+        .git_exclude(true)  // respect .git/info/exclude
+        .build();
 
-fn walk_and_parse(
-    root: &Path,
-    dir: &Path,
-    db: &GraphDb,
-    file_count: &mut usize,
-    node_count: &mut usize,
-) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
-
-    for entry in entries {
-        let entry = entry.map_err(|e| e.to_string())?;
+    for entry in walker.flatten() {
         let path = entry.path();
-
-        // Skip hidden dirs, target/, node_modules/, .git/
-        if path.is_dir() {
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name.starts_with('.') || name == "target" || name == "node_modules" || name == "vendor" {
-                continue;
-            }
-            walk_and_parse(root, &path, db, file_count, node_count)?;
+        if !path.is_file() {
             continue;
         }
 
@@ -132,25 +116,28 @@ fn walk_and_parse(
             continue;
         }
 
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        let content = std::fs::read_to_string(path).unwrap_or_default();
         if content.is_empty() {
             continue;
         }
 
-        let rel_path = path.strip_prefix(root).unwrap_or(&path);
+        let rel_path = path.strip_prefix(dir).unwrap_or(path);
         match deagle_parse::parse_file(rel_path, &content, lang) {
             Ok(nodes) => {
                 for node in &nodes {
                     let _ = db.insert_node(node);
                 }
-                *node_count += nodes.len();
-                *file_count += 1;
+                node_count += nodes.len();
+                file_count += 1;
             }
             Err(e) => {
                 eprintln!("  Warning: {} — {}", rel_path.display(), e);
             }
         }
     }
+
+    eprintln!("Indexed {} files, {} entities", file_count, node_count);
+    eprintln!("Database: {}", db_path.display());
     Ok(())
 }
 
@@ -212,34 +199,24 @@ fn cmd_grep(pattern: &str, dir: &Path) -> Result<(), String> {
 }
 
 #[cfg(feature = "pattern")]
-fn grep_walk(root: &Path, dir: &Path, pattern: &str, total: &mut usize) -> Result<(), String> {
+fn grep_walk(root: &Path, _dir: &Path, pattern: &str, total: &mut usize) -> Result<(), String> {
     use deagle_parse::pattern::search_pattern;
-    let entries = std::fs::read_dir(dir).map_err(|e| e.to_string())?;
 
-    for entry in entries.flatten() {
+    let walker = ignore::WalkBuilder::new(root)
+        .hidden(true).git_ignore(true).build();
+
+    for entry in walker.flatten() {
         let path = entry.path();
-
-        if path.is_dir() {
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name.starts_with('.') || name == "target" || name == "node_modules" || name == "vendor" {
-                continue;
-            }
-            grep_walk(root, &path, pattern, total)?;
-            continue;
-        }
+        if !path.is_file() { continue; }
 
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let lang = Language::from_extension(ext);
-        if lang == Language::Unknown {
-            continue;
-        }
+        if lang == Language::Unknown { continue; }
 
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
-        if content.is_empty() {
-            continue;
-        }
+        let content = std::fs::read_to_string(path).unwrap_or_default();
+        if content.is_empty() { continue; }
 
-        let rel_path = path.strip_prefix(root).unwrap_or(&path);
+        let rel_path = path.strip_prefix(root).unwrap_or(path);
         if let Ok(matches) = search_pattern(rel_path, &content, pattern, lang) {
             for m in &matches {
                 println!("{}:{}: {}", m.file_path, m.line_start, m.text.lines().next().unwrap_or(""));

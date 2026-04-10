@@ -19,5 +19,6 @@ text-search = ["deagle-parse/text-search"]
 deagle-core = { version = "0.1.0", path = "../deagle-core" }
 deagle-parse = { version = "0.1.0", path = "../deagle-parse" }
 clap = { version = "4", features = ["derive"] }
+ignore = "0.4"
 serde = { workspace = true }
 serde_json = { workspace = true }
