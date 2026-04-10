@@ -90,7 +90,9 @@ fn main() {
 }
 
 fn cmd_map(db_path: &Path, dir: &Path) -> Result<(), String> {
-    // Ensure db directory exists
+    use deagle_core::Edge;
+    use rayon::prelude::*;
+
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create db dir: {}", e))?;
     }
@@ -100,50 +102,64 @@ fn cmd_map(db_path: &Path, dir: &Path) -> Result<(), String> {
 
     eprintln!("Indexing {}...", dir.display());
 
-    let mut file_count = 0;
-    let mut node_count = 0;
+    // Collect file paths first (ignore-aware)
+    let files: Vec<_> = ignore::WalkBuilder::new(dir)
+        .hidden(true).git_ignore(true).git_global(true).git_exclude(true)
+        .build()
+        .flatten()
+        .filter(|e| e.path().is_file())
+        .filter(|e| {
+            let ext = e.path().extension().and_then(|x| x.to_str()).unwrap_or("");
+            Language::from_extension(ext) != Language::Unknown
+        })
+        .collect();
 
-    // Use `ignore` crate for .gitignore-aware walking (replaces manual skip logic)
-    let walker = ignore::WalkBuilder::new(dir)
-        .hidden(true)       // skip hidden files/dirs
-        .git_ignore(true)   // respect .gitignore
-        .git_global(true)   // respect global gitignore
-        .git_exclude(true)  // respect .git/info/exclude
-        .build();
-
-    for entry in walker.flatten() {
+    // Parse in parallel with rayon
+    let results: Vec<_> = files.par_iter().filter_map(|entry| {
         let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let lang = Language::from_extension(ext);
-        if lang == Language::Unknown {
-            continue;
-        }
-
-        let content = std::fs::read_to_string(path).unwrap_or_default();
-        if content.is_empty() {
-            continue;
-        }
-
+        let content = std::fs::read_to_string(path).ok()?;
+        if content.is_empty() { return None; }
         let rel_path = path.strip_prefix(dir).unwrap_or(path);
-        match deagle_parse::parse_file(rel_path, &content, lang) {
-            Ok(nodes) => {
-                for node in &nodes {
-                    let _ = db.insert_node(node);
-                }
-                node_count += nodes.len();
-                file_count += 1;
+        deagle_parse::parse_file_with_edges(rel_path, &content, lang).ok()
+    }).collect();
+
+    // Insert into DB sequentially (SQLite is single-writer)
+    let mut file_count = 0;
+    let mut node_count = 0;
+    let mut edge_count = 0;
+
+    for result in &results {
+        if result.nodes.is_empty() { continue; }
+        file_count += 1;
+
+        // Insert nodes and track their DB IDs
+        let mut db_ids = Vec::new();
+        for node in &result.nodes {
+            match db.insert_node(node) {
+                Ok(id) => db_ids.push(id),
+                Err(_) => db_ids.push(-1),
             }
-            Err(e) => {
-                eprintln!("  Warning: {} — {}", rel_path.display(), e);
+        }
+        node_count += result.nodes.len();
+
+        // Insert edges using DB IDs
+        for &(from_idx, to_idx, ref kind) in &result.edges {
+            if from_idx < db_ids.len() && to_idx < db_ids.len() {
+                let from_id = db_ids[from_idx];
+                let to_id = db_ids[to_idx];
+                if from_id > 0 && to_id > 0 {
+                    let _ = db.insert_edge(&Edge {
+                        from_id, to_id, kind: *kind, confidence: 1.0,
+                    });
+                    edge_count += 1;
+                }
             }
         }
     }
 
-    eprintln!("Indexed {} files, {} entities", file_count, node_count);
+    eprintln!("Indexed {} files, {} entities, {} edges", file_count, node_count, edge_count);
     eprintln!("Database: {}", db_path.display());
     Ok(())
 }

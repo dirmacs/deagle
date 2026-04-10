@@ -18,11 +18,21 @@ pub mod text_search;
 use deagle_core::{Language, Node, Result};
 use std::path::Path;
 
+pub use rust_parser::ParseResult;
+
 /// Parse a source file and extract code entities.
 pub fn parse_file(path: &Path, content: &str, language: Language) -> Result<Vec<Node>> {
     match language {
         Language::Rust => rust_parser::parse(path, content),
-        _ => Ok(Vec::new()), // Other languages TODO
+        _ => Ok(Vec::new()),
+    }
+}
+
+/// Parse with edge extraction — returns nodes and relationship tuples.
+pub fn parse_file_with_edges(path: &Path, content: &str, language: Language) -> Result<ParseResult> {
+    match language {
+        Language::Rust => rust_parser::parse_with_edges(path, content),
+        _ => Ok(ParseResult { nodes: Vec::new(), edges: Vec::new() }),
     }
 }
 

@@ -1,10 +1,21 @@
 //! Rust language parser using tree-sitter-rust.
 
-use deagle_core::{DeagleError, Language, Node, NodeKind, Result};
+use deagle_core::{DeagleError, EdgeKind, Language, Node, NodeKind, Result};
 use std::path::Path;
 
-/// Parse a Rust source file and extract definitions.
+/// Result of parsing a file — nodes and their relationships.
+pub struct ParseResult {
+    pub nodes: Vec<Node>,
+    pub edges: Vec<(usize, usize, EdgeKind)>, // (from_idx, to_idx, kind) — indexes into nodes vec
+}
+
+/// Parse a Rust source file and extract definitions + relationships.
 pub fn parse(path: &Path, content: &str) -> Result<Vec<Node>> {
+    parse_with_edges(path, content).map(|r| r.nodes)
+}
+
+/// Parse with edge extraction — returns nodes and relationship tuples.
+pub fn parse_with_edges(path: &Path, content: &str) -> Result<ParseResult> {
     let mut parser = tree_sitter::Parser::new();
     let language = tree_sitter_rust::LANGUAGE;
     parser.set_language(&language.into()).map_err(|e| {
@@ -22,9 +33,27 @@ pub fn parse(path: &Path, content: &str) -> Result<Vec<Node>> {
     let mut nodes = Vec::new();
     let file_path = path.to_string_lossy().to_string();
 
+    // Insert file node as index 0
+    nodes.push(Node {
+        id: 0,
+        name: path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string(),
+        kind: NodeKind::File,
+        language: Language::Rust,
+        file_path: file_path.clone(),
+        line_start: 1,
+        line_end: content.lines().count() as u32,
+        content: None,
+    });
+
     extract_definitions(tree.root_node(), content, &file_path, &mut nodes);
 
-    Ok(nodes)
+    // Build CONTAINS edges: file (idx 0) → each top-level entity
+    let mut edges = Vec::new();
+    for i in 1..nodes.len() {
+        edges.push((0, i, EdgeKind::Contains));
+    }
+
+    Ok(ParseResult { nodes, edges })
 }
 
 fn extract_definitions(
@@ -230,7 +259,8 @@ pub fn main() {
     fn test_parse_empty_file() {
         let path = PathBuf::from("empty.rs");
         let nodes = parse(&path, "").unwrap();
-        assert!(nodes.is_empty());
+        // File node is always created; empty file has just the file node
+        assert!(nodes.len() <= 1);
     }
 
     #[test]

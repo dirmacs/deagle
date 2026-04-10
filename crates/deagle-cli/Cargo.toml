@@ -20,6 +20,8 @@ deagle-core = { version = "0.1.0", path = "../deagle-core" }
 deagle-parse = { version = "0.1.0", path = "../deagle-parse" }
 clap = { version = "4", features = ["derive"] }
 ignore = "0.4"
+rayon = "1.10"
+globset = "0.4"
 tokei = "14"
 serde = { workspace = true }
 serde_json = { workspace = true }
