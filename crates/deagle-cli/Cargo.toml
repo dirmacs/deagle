@@ -1,5 +1,5 @@
 [package]
-name = "deagle-cli"
+name = "deagle"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
