@@ -498,4 +498,93 @@ mod tests {
         assert!(Language::TypeScript.extensions().contains(&"tsx"));
         assert!(Language::Unknown.extensions().is_empty());
     }
+
+    #[test]
+    fn test_multiple_nodes_same_name() {
+        let db = GraphDb::in_memory().unwrap();
+        for file in &["a.rs", "b.rs", "c.rs"] {
+            db.insert_node(&Node {
+                id: 0, name: "new".into(), kind: NodeKind::Method,
+                language: Language::Rust, file_path: file.to_string(),
+                line_start: 1, line_end: 5, content: None,
+            }).unwrap();
+        }
+        let results = db.search_nodes("new").unwrap();
+        assert_eq!(results.len(), 3, "Should find all 3 nodes named 'new'");
+    }
+
+    #[test]
+    fn test_search_empty_query() {
+        let db = GraphDb::in_memory().unwrap();
+        db.insert_node(&Node {
+            id: 0, name: "hello".into(), kind: NodeKind::Function,
+            language: Language::Rust, file_path: "t.rs".into(),
+            line_start: 1, line_end: 1, content: None,
+        }).unwrap();
+        // Empty pattern matches everything via LIKE '%%'
+        let results = db.search_nodes("").unwrap();
+        assert_eq!(results.len(), 1);
+    }
+
+    #[test]
+    fn test_edges_from_nonexistent_node() {
+        let db = GraphDb::in_memory().unwrap();
+        let edges = db.edges_from(999).unwrap();
+        assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn test_multiple_edge_types() {
+        let db = GraphDb::in_memory().unwrap();
+        let id1 = db.insert_node(&Node {
+            id: 0, name: "A".into(), kind: NodeKind::Struct,
+            language: Language::Rust, file_path: "a.rs".into(),
+            line_start: 1, line_end: 5, content: None,
+        }).unwrap();
+        let id2 = db.insert_node(&Node {
+            id: 0, name: "B".into(), kind: NodeKind::Trait,
+            language: Language::Rust, file_path: "b.rs".into(),
+            line_start: 1, line_end: 5, content: None,
+        }).unwrap();
+
+        db.insert_edge(&Edge { from_id: id1, to_id: id2, kind: EdgeKind::Implements, confidence: 1.0 }).unwrap();
+        db.insert_edge(&Edge { from_id: id1, to_id: id2, kind: EdgeKind::References, confidence: 0.8 }).unwrap();
+
+        let edges = db.edges_from(id1).unwrap();
+        assert_eq!(edges.len(), 2);
+        assert!(edges.iter().any(|e| e.kind == EdgeKind::Implements));
+        assert!(edges.iter().any(|e| e.kind == EdgeKind::References));
+    }
+
+    #[test]
+    fn test_edge_confidence_stored() {
+        let db = GraphDb::in_memory().unwrap();
+        let id1 = db.insert_node(&Node {
+            id: 0, name: "x".into(), kind: NodeKind::Function,
+            language: Language::Rust, file_path: "x.rs".into(),
+            line_start: 1, line_end: 1, content: None,
+        }).unwrap();
+        let id2 = db.insert_node(&Node {
+            id: 0, name: "y".into(), kind: NodeKind::Function,
+            language: Language::Rust, file_path: "y.rs".into(),
+            line_start: 1, line_end: 1, content: None,
+        }).unwrap();
+
+        db.insert_edge(&Edge { from_id: id1, to_id: id2, kind: EdgeKind::Calls, confidence: 0.75 }).unwrap();
+        let edges = db.edges_from(id1).unwrap();
+        assert!((edges[0].confidence - 0.75).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_node_with_none_content() {
+        let node = Node {
+            id: 0, name: "no_content".into(), kind: NodeKind::Function,
+            language: Language::Go, file_path: "main.go".into(),
+            line_start: 1, line_end: 10, content: None,
+        };
+        let json = serde_json::to_string(&node).unwrap();
+        let parsed: Node = serde_json::from_str(&json).unwrap();
+        assert!(parsed.content.is_none());
+        assert_eq!(parsed.language, Language::Go);
+    }
 }
