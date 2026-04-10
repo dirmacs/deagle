@@ -86,6 +86,7 @@ pub enum Language {
     Java,
     Cpp,
     C,
+    Ruby,
     Unknown,
 }
 
@@ -101,6 +102,7 @@ impl Language {
             "java" => Self::Java,
             "cpp" | "cc" | "cxx" | "hpp" => Self::Cpp,
             "c" | "h" => Self::C,
+            "rb" | "rake" | "gemspec" => Self::Ruby,
             _ => Self::Unknown,
         }
     }
@@ -116,6 +118,7 @@ impl Language {
             Self::Java => &["java"],
             Self::Cpp => &["cpp", "cc", "cxx", "hpp"],
             Self::C => &["c", "h"],
+            Self::Ruby => &["rb", "rake", "gemspec"],
             Self::Unknown => &[],
         }
     }
@@ -132,6 +135,7 @@ impl std::fmt::Display for Language {
             Self::Java => "java",
             Self::Cpp => "cpp",
             Self::C => "c",
+            Self::Ruby => "ruby",
             Self::Unknown => "unknown",
         };
         write!(f, "{}", s)
