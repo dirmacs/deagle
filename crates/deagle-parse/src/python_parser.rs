@@ -331,4 +331,77 @@ class MyClass:
         assert!(methods.iter().any(|m| m.name == "static_method"));
         assert!(methods.iter().any(|m| m.name == "class_method"));
     }
+
+    #[test]
+    fn test_parse_python_nested_class() {
+        let source = r#"
+class Outer:
+    class Inner:
+        def inner_method(self):
+            pass
+
+    def outer_method(self):
+        pass
+"#;
+        let path = PathBuf::from("nested.py");
+        let nodes = parse(&path, source).unwrap();
+
+        let classes: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Class).collect();
+        assert!(classes.iter().any(|c| c.name == "Outer"));
+    }
+
+    #[test]
+    fn test_parse_python_async_function() {
+        let source = r#"
+import asyncio
+
+async def fetch_data(url: str) -> dict:
+    return {}
+
+class Client:
+    async def connect(self):
+        pass
+"#;
+        let path = PathBuf::from("async.py");
+        let nodes = parse(&path, source).unwrap();
+
+        let fns: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+        assert!(fns.iter().any(|f| f.name == "fetch_data"), "should find async function");
+
+        let methods: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+        assert!(methods.iter().any(|m| m.name == "connect"), "should find async method");
+    }
+
+    #[test]
+    fn test_parse_python_lowercase_not_constant() {
+        let source = r#"
+MAX_SIZE = 100
+lowercase_var = "not a constant"
+_private = True
+"#;
+        let path = PathBuf::from("vars.py");
+        let nodes = parse(&path, source).unwrap();
+
+        let constants: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Constant).collect();
+        assert!(constants.iter().any(|c| c.name == "MAX_SIZE"));
+        // lowercase should NOT be captured as constant
+        assert!(!constants.iter().any(|c| c.name == "lowercase_var"));
+        assert!(!constants.iter().any(|c| c.name == "_private"));
+    }
+
+    #[test]
+    fn test_parse_python_multiple_imports() {
+        let source = r#"
+import os
+import sys
+from typing import Dict, List, Optional
+from pathlib import Path
+from collections import defaultdict
+"#;
+        let path = PathBuf::from("imports.py");
+        let nodes = parse(&path, source).unwrap();
+
+        let imports: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Import).collect();
+        assert_eq!(imports.len(), 5, "should find all 5 import statements");
+    }
 }
