@@ -311,6 +311,47 @@ impl GraphDb {
         rows.collect::<std::result::Result<Vec<_>, _>>().map_err(DeagleError::from)
     }
 
+    /// Fuzzy search nodes by name — ranked by match score (best first).
+    pub fn fuzzy_search_nodes(&self, query: &str) -> Result<Vec<Node>> {
+        use fuzzy_matcher::skim::SkimMatcherV2;
+        use fuzzy_matcher::FuzzyMatcher;
+
+        let matcher = SkimMatcherV2::default();
+
+        // Get all nodes and score them
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, kind, language, file_path, line_start, line_end, content FROM nodes"
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(Node {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                kind: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(2)?))
+                    .unwrap_or(NodeKind::Function),
+                language: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(3)?))
+                    .unwrap_or(Language::Unknown),
+                file_path: row.get(4)?,
+                line_start: row.get(5)?,
+                line_end: row.get(6)?,
+                content: row.get(7)?,
+            })
+        })?;
+
+        let all_nodes: Vec<Node> = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+
+        let mut scored: Vec<(i64, Node)> = all_nodes
+            .into_iter()
+            .filter_map(|node| {
+                matcher.fuzzy_match(&node.name, query).map(|score| (score, node))
+            })
+            .collect();
+
+        // Sort by score descending (best matches first)
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+
+        Ok(scored.into_iter().map(|(_, node)| node).collect())
+    }
+
     /// Get all edges from a node (outgoing relationships).
     pub fn edges_from(&self, node_id: i64) -> Result<Vec<Edge>> {
         let mut stmt = self.conn.prepare(
@@ -573,6 +614,63 @@ mod tests {
         db.insert_edge(&Edge { from_id: id1, to_id: id2, kind: EdgeKind::Calls, confidence: 0.75 }).unwrap();
         let edges = db.edges_from(id1).unwrap();
         assert!((edges[0].confidence - 0.75).abs() < 0.01);
+    }
+
+    #[test]
+    #[test]
+    fn test_fuzzy_search_basic() {
+        let db = GraphDb::in_memory().unwrap();
+        for name in &["process_request", "handle_response", "parse_input", "validate_data"] {
+            db.insert_node(&Node {
+                id: 0, name: name.to_string(), kind: NodeKind::Function,
+                language: Language::Rust, file_path: "lib.rs".into(),
+                line_start: 1, line_end: 5, content: None,
+            }).unwrap();
+        }
+
+        let results = db.fuzzy_search_nodes("proc").unwrap();
+        assert!(!results.is_empty(), "fuzzy search should find matches");
+        assert_eq!(results[0].name, "process_request", "best match should be first");
+    }
+
+    #[test]
+    fn test_fuzzy_search_typo_tolerance() {
+        let db = GraphDb::in_memory().unwrap();
+        db.insert_node(&Node {
+            id: 0, name: "calculate_total".into(), kind: NodeKind::Function,
+            language: Language::Rust, file_path: "math.rs".into(),
+            line_start: 1, line_end: 5, content: None,
+        }).unwrap();
+        db.insert_node(&Node {
+            id: 0, name: "validate_input".into(), kind: NodeKind::Function,
+            language: Language::Rust, file_path: "input.rs".into(),
+            line_start: 1, line_end: 5, content: None,
+        }).unwrap();
+
+        // "calctot" should fuzzy-match "calculate_total"
+        let results = db.fuzzy_search_nodes("calctot").unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].name, "calculate_total");
+    }
+
+    #[test]
+    fn test_fuzzy_search_no_match() {
+        let db = GraphDb::in_memory().unwrap();
+        db.insert_node(&Node {
+            id: 0, name: "hello".into(), kind: NodeKind::Function,
+            language: Language::Rust, file_path: "t.rs".into(),
+            line_start: 1, line_end: 1, content: None,
+        }).unwrap();
+
+        let results = db.fuzzy_search_nodes("zzzzz").unwrap();
+        assert!(results.is_empty(), "no fuzzy match for gibberish");
+    }
+
+    #[test]
+    fn test_fuzzy_search_empty_db() {
+        let db = GraphDb::in_memory().unwrap();
+        let results = db.fuzzy_search_nodes("anything").unwrap();
+        assert!(results.is_empty());
     }
 
     #[test]

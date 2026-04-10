@@ -32,11 +32,14 @@ enum Commands {
     },
     /// Search for symbols by name
     Search {
-        /// Search query (substring match)
+        /// Search query (substring match, or fuzzy with --fuzzy)
         query: String,
         /// Filter by entity kind
         #[arg(long)]
         kind: Option<String>,
+        /// Use fuzzy matching (ranked by score) instead of substring
+        #[arg(long)]
+        fuzzy: bool,
     },
     /// Show graph statistics
     Stats,
@@ -74,7 +77,7 @@ fn main() {
 
     let result = match cli.command {
         Commands::Map { dir } => cmd_map(&cli.db, &dir),
-        Commands::Search { query, kind } => cmd_search(&cli.db, &query, kind.as_deref()),
+        Commands::Search { query, kind, fuzzy } => cmd_search(&cli.db, &query, kind.as_deref(), fuzzy),
         Commands::Stats => cmd_stats(&cli.db),
         Commands::Loc { dir } => cmd_loc(&dir),
         #[cfg(feature = "pattern")]
@@ -164,9 +167,13 @@ fn cmd_map(db_path: &Path, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_search(db_path: &Path, query: &str, kind: Option<&str>) -> Result<(), String> {
+fn cmd_search(db_path: &Path, query: &str, kind: Option<&str>, fuzzy: bool) -> Result<(), String> {
     let db = GraphDb::open(db_path).map_err(|e| format!("Failed to open db: {}", e))?;
-    let results = db.search_nodes(query).map_err(|e| format!("Search failed: {}", e))?;
+    let results = if fuzzy {
+        db.fuzzy_search_nodes(query).map_err(|e| format!("Search failed: {}", e))?
+    } else {
+        db.search_nodes(query).map_err(|e| format!("Search failed: {}", e))?
+    };
 
     let results: Vec<_> = if let Some(k) = kind {
         results.into_iter().filter(|n| n.kind.to_string() == k).collect()
