@@ -14,7 +14,7 @@ pattern = ["dep:ast-grep-core", "dep:ast-grep-language"]
 text-search = ["dep:grep-regex", "dep:grep-searcher", "dep:grep-matcher"]
 
 [dependencies]
-deagle-core = { version = "0.1.0", path = "../deagle-core" }
+deagle-core = { version = "0.1.4", path = "../deagle-core" }
 tree-sitter = "0.26"
 tree-sitter-rust = "0.24"
 serde = { workspace = true }
