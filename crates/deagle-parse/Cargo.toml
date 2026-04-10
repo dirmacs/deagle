@@ -24,3 +24,4 @@ ast-grep-language = { version = "0.42", optional = true }
 grep-regex = { version = "0.1", optional = true }
 grep-searcher = { version = "0.1", optional = true }
 grep-matcher = { version = "0.1", optional = true }
+tree-sitter-python = "0.25"

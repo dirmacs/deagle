@@ -8,6 +8,7 @@
 //! - `pattern` — structural pattern matching via [ast-grep-core](https://crates.io/crates/ast-grep-core)
 
 pub mod rust_parser;
+pub mod python_parser;
 
 #[cfg(feature = "pattern")]
 pub mod pattern;
@@ -24,6 +25,7 @@ pub use rust_parser::ParseResult;
 pub fn parse_file(path: &Path, content: &str, language: Language) -> Result<Vec<Node>> {
     match language {
         Language::Rust => rust_parser::parse(path, content),
+        Language::Python => python_parser::parse(path, content),
         _ => Ok(Vec::new()),
     }
 }
@@ -32,6 +34,7 @@ pub fn parse_file(path: &Path, content: &str, language: Language) -> Result<Vec<
 pub fn parse_file_with_edges(path: &Path, content: &str, language: Language) -> Result<ParseResult> {
     match language {
         Language::Rust => rust_parser::parse_with_edges(path, content),
+        Language::Python => python_parser::parse_with_edges(path, content),
         _ => Ok(ParseResult { nodes: Vec::new(), edges: Vec::new() }),
     }
 }
