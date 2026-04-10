@@ -26,7 +26,7 @@
 ## Install
 
 ```bash
-cargo install deagle-cli
+cargo install deagle
 ```
 
 ## Usage
@@ -63,7 +63,7 @@ deagle stats
 ```
 deagle-core    — Graph types + SQLite storage + fuzzy/FTS5 search + incremental hashing
 deagle-parse   — Tree-sitter parsers (Rust, Python, Go, TypeScript/JS) + ast-grep + ripgrep
-deagle-cli     — CLI: map, search, sg, rg, loc, stats (6 commands)
+deagle     — CLI: map, search, sg, rg, loc, stats (6 commands)
 deagle-server  — HTTP API (Axum) + MCP server (rmcp) for editor integration
 ```
 
