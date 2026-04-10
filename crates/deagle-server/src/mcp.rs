@@ -118,7 +118,7 @@ impl DeagleMcp {
 
         let filtered: Vec<SearchResult> = results
             .into_iter()
-            .filter(|n| params.kind.as_ref().map_or(true, |k| n.kind.to_string() == *k))
+            .filter(|n| params.kind.as_ref().is_none_or(|k| n.kind.to_string() == *k))
             .map(|n| SearchResult {
                 name: n.name,
                 kind: n.kind.to_string(),

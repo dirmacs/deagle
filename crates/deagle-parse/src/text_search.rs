@@ -71,7 +71,7 @@ fn walk_search(
     results: &mut Vec<TextMatch>,
 ) -> Result<()> {
     let entries = std::fs::read_dir(dir)
-        .map_err(|e| deagle_core::DeagleError::Io(e))?;
+        .map_err(deagle_core::DeagleError::Io)?;
 
     for entry in entries.flatten() {
         let path = entry.path();

@@ -231,8 +231,9 @@ fn cmd_search(db_path: &Path, query: &str, kind: Option<&str>, fuzzy: bool) -> R
         return Ok(());
     }
 
-    println!("{:<30} {:<12} {:<10} {}", "NAME", "KIND", "LANG", "LOCATION");
-    println!("{}", "-".repeat(80));
+    println!("{:<30} {:<12} {:<10} LOCATION", "NAME", "KIND", "LANG");
+    let sep = "-".repeat(80);
+    println!("{sep}");
     for node in &results {
         println!(
             "{:<30} {:<12} {:<10} {}:{}",
@@ -252,8 +253,9 @@ fn cmd_keyword(db_path: &Path, query: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    println!("{:<30} {:<12} {:<10} {}", "NAME", "KIND", "LANG", "LOCATION");
-    println!("{}", "-".repeat(80));
+    println!("{:<30} {:<12} {:<10} LOCATION", "NAME", "KIND", "LANG");
+    let sep = "-".repeat(80);
+    println!("{sep}");
     for node in &results {
         println!(
             "{:<30} {:<12} {:<10} {}:{}",
