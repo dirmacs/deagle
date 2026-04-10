@@ -23,11 +23,7 @@ pub fn parse_with_edges(path: &Path, content: &str) -> Result<ParseResult> {
 
     let mut nodes = Vec::new();
     let file_path = path.to_string_lossy().to_string();
-    let lang = if path.extension().and_then(|e| e.to_str()) == Some("h") {
-        Language::C
-    } else {
-        Language::C
-    };
+    let lang = Language::C;
 
     nodes.push(Node {
         id: 0,
