@@ -261,6 +261,12 @@ impl GraphDb {
                 content_hash TEXT NOT NULL,
                 indexed_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5(
+                name, content, file_path,
+                content='nodes',
+                content_rowid='id'
+            );
             "
         )?;
         Ok(())
@@ -281,7 +287,40 @@ impl GraphDb {
                 node.content,
             ],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        let id = self.conn.last_insert_rowid();
+        // Populate FTS5 index
+        self.conn.execute(
+            "INSERT INTO nodes_fts(rowid, name, content, file_path) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![id, node.name, node.content, node.file_path],
+        )?;
+        Ok(id)
+    }
+
+    /// Full-text keyword search using FTS5 BM25 ranking.
+    pub fn keyword_search(&self, query: &str) -> Result<Vec<Node>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT n.id, n.name, n.kind, n.language, n.file_path, n.line_start, n.line_end, n.content
+             FROM nodes_fts f
+             JOIN nodes n ON n.id = f.rowid
+             WHERE nodes_fts MATCH ?1
+             ORDER BY rank
+             LIMIT 50"
+        )?;
+        let rows = stmt.query_map([query], |row| {
+            Ok(Node {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                kind: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(2)?))
+                    .unwrap_or(NodeKind::Function),
+                language: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(3)?))
+                    .unwrap_or(Language::Unknown),
+                file_path: row.get(4)?,
+                line_start: row.get(5)?,
+                line_end: row.get(6)?,
+                content: row.get(7)?,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(DeagleError::from)
     }
 
     /// Insert an edge.
@@ -389,7 +428,7 @@ impl GraphDb {
 
     /// Clear all data (for re-indexing).
     pub fn clear(&self) -> Result<()> {
-        self.conn.execute_batch("DELETE FROM edges; DELETE FROM nodes; DELETE FROM file_hashes;")?;
+        self.conn.execute_batch("DELETE FROM edges; DELETE FROM nodes_fts; DELETE FROM nodes; DELETE FROM file_hashes;")?;
         Ok(())
     }
 
@@ -725,6 +764,64 @@ mod tests {
         let db = GraphDb::in_memory().unwrap();
         let results = db.fuzzy_search_nodes("anything").unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_keyword_search() {
+        let db = GraphDb::in_memory().unwrap();
+        db.insert_node(&Node {
+            id: 0, name: "process_data".into(), kind: NodeKind::Function,
+            language: Language::Rust, file_path: "data.rs".into(),
+            line_start: 1, line_end: 10,
+            content: Some("pub fn process_data(input: Vec<String>) -> Result<()>".into()),
+        }).unwrap();
+        db.insert_node(&Node {
+            id: 0, name: "validate".into(), kind: NodeKind::Function,
+            language: Language::Rust, file_path: "val.rs".into(),
+            line_start: 1, line_end: 5, content: Some("fn validate(s: &str) -> bool".into()),
+        }).unwrap();
+
+        let results = db.keyword_search("process").unwrap();
+        assert!(!results.is_empty(), "FTS5 should find 'process'");
+        assert_eq!(results[0].name, "process_data");
+    }
+
+    #[test]
+    fn test_keyword_search_content() {
+        let db = GraphDb::in_memory().unwrap();
+        db.insert_node(&Node {
+            id: 0, name: "handler".into(), kind: NodeKind::Function,
+            language: Language::Rust, file_path: "web.rs".into(),
+            line_start: 1, line_end: 20,
+            content: Some("async fn handler(req: Request) -> Response { authenticate(req) }".into()),
+        }).unwrap();
+
+        // Search by content, not name
+        let results = db.keyword_search("authenticate").unwrap();
+        assert!(!results.is_empty(), "FTS5 should search content too");
+    }
+
+    #[test]
+    fn test_keyword_search_empty() {
+        let db = GraphDb::in_memory().unwrap();
+        db.insert_node(&Node {
+            id: 0, name: "hello".into(), kind: NodeKind::Function,
+            language: Language::Rust, file_path: "h.rs".into(),
+            line_start: 1, line_end: 1, content: None,
+        }).unwrap();
+
+        let results = db.keyword_search("nonexistent_xyz").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_incremental_hash() {
+        let db = GraphDb::in_memory().unwrap();
+        let content = "fn main() {}";
+        assert!(db.needs_reindex("test.rs", content).unwrap(), "new file needs indexing");
+        db.store_file_hash("test.rs", content).unwrap();
+        assert!(!db.needs_reindex("test.rs", content).unwrap(), "same content skipped");
+        assert!(db.needs_reindex("test.rs", "fn main() { println!() }").unwrap(), "changed content needs re-index");
     }
 
     #[test]
