@@ -49,6 +49,12 @@ enum Commands {
         #[arg(default_value = ".")]
         dir: PathBuf,
     },
+    /// Count lines of code by language (powered by tokei)
+    Loc {
+        /// Directory to count
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+    },
     /// Fast regex text search (powered by ripgrep)
     #[cfg(feature = "text-search")]
     Rg {
@@ -70,6 +76,7 @@ fn main() {
         Commands::Map { dir } => cmd_map(&cli.db, &dir),
         Commands::Search { query, kind } => cmd_search(&cli.db, &query, kind.as_deref()),
         Commands::Stats => cmd_stats(&cli.db),
+        Commands::Loc { dir } => cmd_loc(&dir),
         #[cfg(feature = "pattern")]
         Commands::Sg { pattern, dir } => cmd_grep(&pattern, &dir),
         #[cfg(feature = "text-search")]
@@ -165,6 +172,52 @@ fn cmd_search(db_path: &Path, query: &str, kind: Option<&str>) -> Result<(), Str
         );
     }
     println!("\n{} result(s)", results.len());
+    Ok(())
+}
+
+fn cmd_loc(dir: &Path) -> Result<(), String> {
+    use tokei::{Config, Languages};
+
+    let config = Config::default();
+    let mut languages = Languages::new();
+    languages.get_statistics(&[dir], &[], &config);
+
+    if languages.is_empty() {
+        eprintln!("No recognized source files in {}", dir.display());
+        return Ok(());
+    }
+
+    println!("{:<20} {:>8} {:>8} {:>8} {:>8}", "LANGUAGE", "FILES", "CODE", "COMMENTS", "BLANKS");
+    println!("{}", "-".repeat(60));
+
+    let mut total_files = 0usize;
+    let mut total_code = 0usize;
+    let mut total_comments = 0usize;
+    let mut total_blanks = 0usize;
+
+    let mut sorted: Vec<_> = languages.iter().collect();
+    sorted.sort_by(|a, b| b.1.code.cmp(&a.1.code));
+
+    for (lang_type, lang) in &sorted {
+        if lang.code == 0 && lang.comments == 0 {
+            continue;
+        }
+        let files = lang.reports.len();
+        println!(
+            "{:<20} {:>8} {:>8} {:>8} {:>8}",
+            format!("{}", lang_type), files, lang.code, lang.comments, lang.blanks
+        );
+        total_files += files;
+        total_code += lang.code;
+        total_comments += lang.comments;
+        total_blanks += lang.blanks;
+    }
+
+    println!("{}", "-".repeat(60));
+    println!(
+        "{:<20} {:>8} {:>8} {:>8} {:>8}",
+        "TOTAL", total_files, total_code, total_comments, total_blanks
+    );
     Ok(())
 }
 
