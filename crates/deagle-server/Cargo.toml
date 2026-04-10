@@ -10,6 +10,15 @@ description = "HTTP API + MCP server for deagle code intelligence"
 name = "deagle-serve"
 path = "src/main.rs"
 
+[[bin]]
+name = "deagle-mcp"
+path = "src/mcp.rs"
+required-features = ["mcp"]
+
+[features]
+default = ["mcp"]
+mcp = ["dep:rmcp"]
+
 [dependencies]
 deagle-core = { version = "0.1.0", path = "../deagle-core" }
 deagle-parse = { version = "0.1.0", path = "../deagle-parse", features = ["pattern", "text-search"] }
@@ -22,3 +31,4 @@ ignore = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower = "0.5"
+rmcp = { version = "1.3", features = ["server", "transport-io", "macros"], optional = true }
