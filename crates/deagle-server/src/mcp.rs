@@ -136,6 +136,36 @@ impl DeagleMcp {
     }
 
     #[tool(
+        name = "deagle_keyword",
+        description = "Full-text keyword search using FTS5 BM25 ranking. Searches entity names and source content. Returns results ranked by relevance."
+    )]
+    fn keyword(&self, Parameters(params): Parameters<SearchParams>) -> McpJson<SearchOutput> {
+        let db = self.db.lock().unwrap();
+        let results = match db.keyword_search(&params.query) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Keyword search error: {}", e);
+                return McpJson(SearchOutput { results: vec![], count: 0 });
+            }
+        };
+
+        let filtered: Vec<SearchResult> = results
+            .into_iter()
+            .filter(|n| params.kind.as_ref().is_none_or(|k| n.kind.to_string() == *k))
+            .map(|n| SearchResult {
+                name: n.name,
+                kind: n.kind.to_string(),
+                language: n.language.to_string(),
+                file_path: n.file_path,
+                line_start: n.line_start,
+            })
+            .collect();
+
+        let count = filtered.len();
+        McpJson(SearchOutput { results: filtered, count })
+    }
+
+    #[tool(
         name = "deagle_stats",
         description = "Show graph database statistics — total nodes (code entities) and edges (relationships) in the index."
     )]
