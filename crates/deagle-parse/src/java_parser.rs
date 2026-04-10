@@ -79,7 +79,7 @@ fn extract_definitions(
             let start = node.start_position();
             let end = node.end_position();
             let content = node.utf8_text(source.as_bytes()).ok().map(|s| {
-                if s.len() > 500 { format!("{}...", &s[..500]) } else { s.to_string() }
+                crate::truncate_content(s, 500)
             });
 
             results.push(Node {

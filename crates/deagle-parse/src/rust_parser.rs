@@ -81,7 +81,7 @@ fn extract_definitions(
             let end = node.end_position();
             let content = node.utf8_text(source.as_bytes()).ok().map(|s| {
                 // Truncate long content
-                if s.len() > 500 { format!("{}...", &s[..500]) } else { s.to_string() }
+                crate::truncate_content(s, 500)
             });
 
             results.push(Node {
@@ -126,7 +126,7 @@ fn extract_impl_methods(
                         let start = item.start_position();
                         let end = item.end_position();
                         let content = item.utf8_text(source.as_bytes()).ok().map(|s| {
-                            if s.len() > 500 { format!("{}...", &s[..500]) } else { s.to_string() }
+                            crate::truncate_content(s, 500)
                         });
                         results.push(Node {
                             id: 0,
