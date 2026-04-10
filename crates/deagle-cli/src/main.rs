@@ -44,6 +44,11 @@ enum Commands {
         #[arg(long)]
         fuzzy: bool,
     },
+    /// Full-text keyword search (BM25 ranked via FTS5)
+    Keyword {
+        /// Search query (searches entity names and content)
+        query: String,
+    },
     /// Show graph statistics
     Stats,
     /// Structural AST pattern search (powered by ast-grep)
@@ -81,6 +86,7 @@ fn main() {
     let result = match cli.command {
         Commands::Map { dir, force } => cmd_map(&cli.db, &dir, force),
         Commands::Search { query, kind, fuzzy } => cmd_search(&cli.db, &query, kind.as_deref(), fuzzy),
+        Commands::Keyword { query } => cmd_keyword(&cli.db, &query),
         Commands::Stats => cmd_stats(&cli.db),
         Commands::Loc { dir } => cmd_loc(&dir),
         #[cfg(feature = "pattern")]
@@ -234,6 +240,27 @@ fn cmd_search(db_path: &Path, query: &str, kind: Option<&str>, fuzzy: bool) -> R
         );
     }
     println!("\n{} result(s)", results.len());
+    Ok(())
+}
+
+fn cmd_keyword(db_path: &Path, query: &str) -> Result<(), String> {
+    let db = GraphDb::open(db_path).map_err(|e| format!("Failed to open db: {}", e))?;
+    let results = db.keyword_search(query).map_err(|e| format!("Keyword search failed: {}", e))?;
+
+    if results.is_empty() {
+        eprintln!("No keyword matches for '{}'", query);
+        return Ok(());
+    }
+
+    println!("{:<30} {:<12} {:<10} {}", "NAME", "KIND", "LANG", "LOCATION");
+    println!("{}", "-".repeat(80));
+    for node in &results {
+        println!(
+            "{:<30} {:<12} {:<10} {}:{}",
+            node.name, node.kind, node.language, node.file_path, node.line_start,
+        );
+    }
+    println!("\n{} result(s) (BM25 ranked)", results.len());
     Ok(())
 }
 
