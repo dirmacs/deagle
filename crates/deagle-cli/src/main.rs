@@ -6,7 +6,7 @@
 //! - `deagle stats` — show graph statistics
 
 use clap::{Parser, Subcommand};
-use deagle_core::{GraphDb, Language};
+use deagle_core::{Edge, EdgeKind, GraphDb, Language};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -102,7 +102,6 @@ fn main() {
 }
 
 fn cmd_map(db_path: &Path, dir: &Path, force: bool) -> Result<(), String> {
-    use deagle_core::Edge;
     use rayon::prelude::*;
 
     if let Some(parent) = db_path.parent() {
@@ -158,7 +157,7 @@ fn cmd_map(db_path: &Path, dir: &Path, force: bool) -> Result<(), String> {
             .map(|r| (rel_str, content, r))
     }).collect();
 
-    // Insert into DB sequentially (SQLite is single-writer)
+    // Batch insert into DB (single transaction per file for speed)
     let mut file_count = 0;
     let mut node_count = 0;
     let mut edge_count = 0;
@@ -172,31 +171,33 @@ fn cmd_map(db_path: &Path, dir: &Path, force: bool) -> Result<(), String> {
         }
 
         file_count += 1;
-
-        // Insert nodes and track their DB IDs
-        let mut db_ids = Vec::new();
-        for node in &result.nodes {
-            match db.insert_node(node) {
-                Ok(id) => db_ids.push(id),
-                Err(_) => db_ids.push(-1),
-            }
-        }
         node_count += result.nodes.len();
+
+        // Batch insert nodes — returns their DB IDs
+        let db_ids = match db.insert_batch(&result.nodes, &[]) {
+            Ok(ids) => ids,
+            Err(_) => continue,
+        };
 
         // Store file hash for incremental indexing
         let _ = db.store_file_hash(rel_path, content);
 
-        // Insert edges using DB IDs
-        for &(from_idx, to_idx, ref kind) in &result.edges {
-            if from_idx < db_ids.len() && to_idx < db_ids.len() {
-                let from_id = db_ids[from_idx];
-                let to_id = db_ids[to_idx];
-                if from_id > 0 && to_id > 0 {
-                    let _ = db.insert_edge(&Edge {
-                        from_id, to_id, kind: *kind, confidence: 1.0,
-                    });
-                    edge_count += 1;
-                }
+        // Collect resolved edges and batch insert
+        let resolved_edges: Vec<(i64, i64, EdgeKind)> = result.edges.iter()
+            .filter(|(from_idx, to_idx, _)| {
+                *from_idx < db_ids.len() && *to_idx < db_ids.len()
+                    && db_ids[*from_idx] > 0 && db_ids[*to_idx] > 0
+            })
+            .map(|(from_idx, to_idx, kind)| (db_ids[*from_idx], db_ids[*to_idx], *kind))
+            .collect();
+        edge_count += resolved_edges.len();
+
+        if !resolved_edges.is_empty() {
+            // Insert edges in their own batch (nodes already committed)
+            for (from_id, to_id, kind) in &resolved_edges {
+                let _ = db.insert_edge(&Edge {
+                    from_id: *from_id, to_id: *to_id, kind: *kind, confidence: 1.0,
+                });
             }
         }
     }

@@ -210,6 +210,10 @@ impl GraphDb {
     /// Open or create a graph database at the given path.
     pub fn open(path: &std::path::Path) -> Result<Self> {
         let conn = rusqlite::Connection::open(path)?;
+        // WAL mode: concurrent reads during writes, faster for indexing workloads
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        // Synchronous NORMAL: safe with WAL, 2-3x faster than FULL
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
         let db = Self { conn };
         db.init_schema()?;
         Ok(db)
@@ -294,6 +298,44 @@ impl GraphDb {
             rusqlite::params![id, node.name, node.content, node.file_path],
         )?;
         Ok(id)
+    }
+
+    /// Batch insert nodes and edges in a single transaction (much faster for indexing).
+    pub fn insert_batch(&self, nodes: &[Node], edges: &[(i64, i64, EdgeKind)]) -> Result<Vec<i64>> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut ids = Vec::with_capacity(nodes.len());
+
+        {
+            let mut node_stmt = tx.prepare_cached(
+                "INSERT INTO nodes (name, kind, language, file_path, line_start, line_end, content)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+            )?;
+            let mut fts_stmt = tx.prepare_cached(
+                "INSERT INTO nodes_fts(rowid, name, content, file_path) VALUES (?1, ?2, ?3, ?4)"
+            )?;
+
+            for node in nodes {
+                node_stmt.execute(rusqlite::params![
+                    node.name, node.kind.to_string(), node.language.to_string(),
+                    node.file_path, node.line_start, node.line_end, node.content,
+                ])?;
+                let id = tx.last_insert_rowid();
+                fts_stmt.execute(rusqlite::params![id, node.name, node.content, node.file_path])?;
+                ids.push(id);
+            }
+        }
+
+        {
+            let mut edge_stmt = tx.prepare_cached(
+                "INSERT INTO edges (from_id, to_id, kind, confidence) VALUES (?1, ?2, ?3, ?4)"
+            )?;
+            for (from_id, to_id, kind) in edges {
+                edge_stmt.execute(rusqlite::params![from_id, to_id, kind.to_string(), 1.0])?;
+            }
+        }
+
+        tx.commit()?;
+        Ok(ids)
     }
 
     /// Full-text keyword search using FTS5 BM25 ranking.
