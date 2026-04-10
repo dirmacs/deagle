@@ -11,12 +11,12 @@
 
 ## Features
 
-- **4 language parsers**: Rust, Python, Go, TypeScript/JavaScript (tree-sitter)
+- **6 language parsers**: Rust, Python, Go, TypeScript/JavaScript, Java, C (tree-sitter)
 - **3 search modes**: substring, fuzzy (skim), keyword (FTS5 BM25)
 - **Structural AST search**: `deagle sg '$X.unwrap()'` (ast-grep)
 - **Regex text search**: `deagle rg 'TODO|FIXME'` (ripgrep)
 - **Incremental indexing**: SHA-256 file hashing, skip unchanged files
-- **MCP server**: 5 tools for Claude Code/editor integration
+- **MCP server**: 6 tools for Claude Code/editor integration (search, keyword, stats, map, sg, rg)
 - **HTTP API**: 6 REST endpoints matching CLI
 - **LOC counting**: per-language breakdown (tokei)
 - **Graph DB**: SQLite with nodes, edges, file hashes, FTS5
