@@ -40,9 +40,9 @@ enum Commands {
     },
     /// Show graph statistics
     Stats,
-    /// Structural pattern search (powered by ast-grep)
+    /// Structural AST pattern search (powered by ast-grep)
     #[cfg(feature = "pattern")]
-    Grep {
+    Sg {
         /// AST pattern (e.g., "$X.unwrap()", "fn $NAME() { $$$ }")
         pattern: String,
         /// Directory to search
@@ -71,7 +71,7 @@ fn main() {
         Commands::Search { query, kind } => cmd_search(&cli.db, &query, kind.as_deref()),
         Commands::Stats => cmd_stats(&cli.db),
         #[cfg(feature = "pattern")]
-        Commands::Grep { pattern, dir } => cmd_grep(&pattern, &dir),
+        Commands::Sg { pattern, dir } => cmd_grep(&pattern, &dir),
         #[cfg(feature = "text-search")]
         Commands::Rg { pattern, dir, lang } => cmd_rg(&pattern, &dir, lang.as_deref()),
     };
