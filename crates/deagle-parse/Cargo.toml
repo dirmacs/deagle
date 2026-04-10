@@ -25,3 +25,4 @@ grep-regex = { version = "0.1", optional = true }
 grep-searcher = { version = "0.1", optional = true }
 grep-matcher = { version = "0.1", optional = true }
 tree-sitter-python = "0.25"
+tree-sitter-go = "0.25"
