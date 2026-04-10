@@ -70,6 +70,26 @@ deagle loc .
 deagle stats
 ```
 
+## Autonomous agent use cases
+
+Deagle powers the "intel loop" in the [ralph-loop](https://github.com/dirmacs/skills/tree/main/ralph-loop)
+pattern — autonomous iteration for long-running agent sessions. The loop
+rotates through deagle commands to find work when the main task queue
+is empty:
+
+| Action | Command | What it finds |
+|---|---|---|
+| Dead code hunt | `deagle sg "pub fn \$NAME"` + reference check | unused public functions |
+| Architecture audit | `deagle search "" --kind struct` | oversized types, SRP violations |
+| Coupling analysis | `deagle search "" --kind import` | import hotspots, circular deps |
+| Test gap detection | `deagle search <fn>` filtered against test files | untested public APIs |
+| Cross-repo impact | `deagle sg` across multiple indexed repos | shared pattern drift |
+
+Graph-first exploration (vs grepping raw files) keeps autonomous agents
+from burning tokens on random file reads. A ralph loop running on a
+100K-LOC codebase can produce 20+ actionable intel reports per hour
+using `deagle stats` → `deagle sg` → `deagle search` pipelines.
+
 ## Architecture
 
 ```
