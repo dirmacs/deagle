@@ -13,6 +13,7 @@ pub mod go_parser;
 pub mod typescript_parser;
 pub mod java_parser;
 pub mod c_parser;
+pub mod cpp_parser;
 
 #[cfg(feature = "pattern")]
 pub mod pattern;
@@ -47,6 +48,7 @@ pub fn parse_file(path: &Path, content: &str, language: Language) -> Result<Vec<
         Language::TypeScript | Language::JavaScript => typescript_parser::parse(path, content),
         Language::Java => java_parser::parse(path, content),
         Language::C => c_parser::parse(path, content),
+        Language::Cpp => cpp_parser::parse(path, content),
         _ => Ok(Vec::new()),
     }
 }
@@ -60,6 +62,7 @@ pub fn parse_file_with_edges(path: &Path, content: &str, language: Language) -> 
         Language::TypeScript | Language::JavaScript => typescript_parser::parse_with_edges(path, content),
         Language::Java => java_parser::parse_with_edges(path, content),
         Language::C => c_parser::parse_with_edges(path, content),
+        Language::Cpp => cpp_parser::parse_with_edges(path, content),
         _ => Ok(ParseResult { nodes: Vec::new(), edges: Vec::new() }),
     }
 }

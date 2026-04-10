@@ -11,7 +11,7 @@
 
 ## Features
 
-- **6 language parsers**: Rust, Python, Go, TypeScript/JavaScript, Java, C (tree-sitter)
+- **7 language parsers**: Rust, Python, Go, TypeScript/JavaScript, Java, C, C++ (tree-sitter)
 - **3 search modes**: substring, fuzzy (skim), keyword (FTS5 BM25)
 - **Structural AST search**: `deagle sg '$X.unwrap()'` (ast-grep)
 - **Regex text search**: `deagle rg 'TODO|FIXME'` (ripgrep)
