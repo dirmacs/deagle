@@ -8,12 +8,12 @@
     <img src="{{ get_url(path='deagle-logo.svg') }}" alt="deagle" class="hero-logo" width="128" height="128">
   </div>
   <h1><span class="logo-d">d</span>eagle</h1>
-  <div class="hero-badge">v0.1.0</div>
+  <div class="hero-badge">v0.1.2</div>
   <p class="tagline">Rust-native code intelligence</p>
-  <p class="subtitle">Tree-sitter parsing · SQLite graph · Single binary · No Docker</p>
+  <p class="subtitle">5 languages · 4 search modes · Incremental indexing · MCP server</p>
   <div class="hero-actions">
     <a href="https://github.com/dirmacs/deagle" class="btn btn-primary">GitHub</a>
-    <a href="https://crates.io/crates/deagle-cli" class="btn btn-secondary">cargo install deagle-cli</a>
+    <a href="https://crates.io/crates/deagle" class="btn btn-secondary">cargo install deagle</a>
   </div>
 </section>
 
@@ -26,8 +26,8 @@
     </div>
     <div class="feature">
       <div class="feature-icon">🌳</div>
-      <h3>Tree-Sitter Parsing</h3>
-      <p>Multi-language AST extraction. Rust first, Python and Go next. Precise definitions, methods, and imports.</p>
+      <h3>5 Language Parsers</h3>
+      <p>Rust, Python, Go, TypeScript/JavaScript, Java. Tree-sitter AST extraction with precise definitions, methods, and imports.</p>
     </div>
     <div class="feature">
       <div class="feature-icon">⚡</div>
@@ -44,30 +44,43 @@
 
 <section class="install">
   <h2>Install</h2>
-  <pre><code>cargo install deagle-cli</code></pre>
+  <pre><code>cargo install deagle</code></pre>
   <p>Or from source:</p>
   <pre><code>git clone https://github.com/dirmacs/deagle && cd deagle
 cargo install --path crates/deagle-cli</code></pre>
+  <p><a href="https://crates.io/crates/deagle">crates.io/crates/deagle</a> · <a href="https://crates.io/crates/deagle-core">deagle-core</a> · <a href="https://crates.io/crates/deagle-parse">deagle-parse</a> · <a href="https://crates.io/crates/deagle-server">deagle-server</a></p>
 </section>
 
 <section class="commands">
   <h2>Commands</h2>
   <div class="command-grid">
     <div class="command">
-      <code>deagle map &lt;dir&gt;</code>
-      <span>Index a codebase into the graph</span>
+      <code>deagle map . [--force]</code>
+      <span>Index a codebase (incremental by default)</span>
     </div>
     <div class="command">
-      <code>deagle search &lt;query&gt;</code>
-      <span>Search symbols by name</span>
+      <code>deagle search &lt;q&gt; [--fuzzy]</code>
+      <span>Search entities (substring or fuzzy)</span>
     </div>
     <div class="command">
-      <code>deagle search &lt;query&gt; --kind struct</code>
-      <span>Filter by entity kind</span>
+      <code>deagle keyword &lt;q&gt;</code>
+      <span>Full-text BM25 keyword search</span>
+    </div>
+    <div class="command">
+      <code>deagle sg '$X.unwrap()'</code>
+      <span>Structural AST search (ast-grep)</span>
+    </div>
+    <div class="command">
+      <code>deagle rg 'TODO' --lang rust</code>
+      <span>Regex text search (ripgrep)</span>
+    </div>
+    <div class="command">
+      <code>deagle loc .</code>
+      <span>Lines of code by language</span>
     </div>
     <div class="command">
       <code>deagle stats</code>
-      <span>Show graph statistics</span>
+      <span>Graph database statistics</span>
     </div>
   </div>
 </section>
