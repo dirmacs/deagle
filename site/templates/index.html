@@ -8,9 +8,9 @@
     <img src="{{ get_url(path='deagle-logo.svg') }}" alt="deagle" class="hero-logo" width="128" height="128">
   </div>
   <h1><span class="logo-d">d</span>eagle</h1>
-  <div class="hero-badge">v0.1.2</div>
+  <div class="hero-badge">v0.1.3</div>
   <p class="tagline">Rust-native code intelligence</p>
-  <p class="subtitle">5 languages · 4 search modes · Incremental indexing · MCP server</p>
+  <p class="subtitle">7 languages · 4 search modes · Incremental indexing · MCP server</p>
   <div class="hero-actions">
     <a href="https://github.com/dirmacs/deagle" class="btn btn-primary">GitHub</a>
     <a href="https://crates.io/crates/deagle" class="btn btn-secondary">cargo install deagle</a>
@@ -26,13 +26,13 @@
     </div>
     <div class="feature">
       <div class="feature-icon">🌳</div>
-      <h3>5 Language Parsers</h3>
-      <p>Rust, Python, Go, TypeScript/JavaScript, Java. Tree-sitter AST extraction with precise definitions, methods, and imports.</p>
+      <h3>7 Language Parsers</h3>
+      <p>Rust, Python, Go, TypeScript/JavaScript, Java, C, C++. Tree-sitter AST extraction with precise definitions, methods, and imports.</p>
     </div>
     <div class="feature">
       <div class="feature-icon">⚡</div>
-      <h3>Single Binary</h3>
-      <p>No Docker, no ArangoDB, no external services. SQLite bundled. ~10MB binary indexes thousands of files in milliseconds.</p>
+      <h3>Fast</h3>
+      <p>94-file Rust project: <strong>2.2s</strong>. 14-file project: <strong>125ms</strong>. SQLite WAL mode, batch inserts, rayon parallel parsing. No Docker, no external services.</p>
     </div>
     <div class="feature">
       <div class="feature-icon">🧬</div>
@@ -87,11 +87,31 @@ cargo install --path crates/deagle-cli</code></pre>
 
 <section class="plugin">
   <h2>Architecture</h2>
-  <p>Three-crate workspace with clean separation of concerns.</p>
+  <p>Four-crate workspace with clean separation of concerns.</p>
   <div class="plugin-grid">
-    <div class="plugin-item"><strong>deagle-core</strong> — Graph types (Node, Edge) + SQLite storage + semantic search</div>
-    <div class="plugin-item"><strong>deagle-parse</strong> — Tree-sitter parsers per language (Rust, Python, Go)</div>
-    <div class="plugin-item"><strong>deagle-cli</strong> — CLI commands: map, search, stats</div>
+    <div class="plugin-item"><strong>deagle-core</strong> — Graph types (Node, Edge) + SQLite WAL storage + FTS5 + fuzzy search</div>
+    <div class="plugin-item"><strong>deagle-parse</strong> — Tree-sitter parsers: Rust, Python, Go, TypeScript, Java, C, C++</div>
+    <div class="plugin-item"><strong>deagle-cli</strong> — CLI: map, search, keyword, sg, rg, loc, stats</div>
+    <div class="plugin-item"><strong>deagle-server</strong> — MCP server (6 tools) + HTTP API (6 endpoints)</div>
+  </div>
+</section>
+
+<section class="install">
+  <h2>Benchmarks</h2>
+  <p>Measured with <a href="https://github.com/sharkdp/hyperfine">hyperfine</a> on a single VPS (release build):</p>
+  <div class="command-grid">
+    <div class="command">
+      <code>dstack (14 files, 296 entities)</code>
+      <span><strong>125ms</strong></span>
+    </div>
+    <div class="command">
+      <code>deagle (15 files, 400 entities)</code>
+      <span><strong>339ms</strong></span>
+    </div>
+    <div class="command">
+      <code>ARES (94 files, 3,486 entities)</code>
+      <span><strong>2.2s</strong></span>
+    </div>
   </div>
 </section>
 

@@ -19,9 +19,21 @@
 - **MCP server**: 6 tools for Claude Code/editor integration (search, keyword, stats, map, sg, rg)
 - **HTTP API**: 6 REST endpoints matching CLI
 - **LOC counting**: per-language breakdown (tokei)
-- **Graph DB**: SQLite with nodes, edges, file hashes, FTS5
-- **Parallel parsing**: rayon for multi-core indexing
+- **Graph DB**: SQLite WAL mode with nodes, edges, file hashes, FTS5
+- **Parallel parsing**: rayon for multi-core indexing, batch inserts
 - **Single binary** — no Docker, no external services
+
+## Performance
+
+Measured with [hyperfine](https://github.com/sharkdp/hyperfine) on a single VPS (release build):
+
+| Codebase | Files | Entities | Edges | Time |
+|----------|-------|----------|-------|------|
+| dstack (small) | 14 | 296 | 282 | **125ms** |
+| deagle (medium) | 15 | 400 | 385 | **339ms** |
+| ARES (large) | 94 | 3,486 | 3,392 | **2.2s** |
+
+SQLite WAL mode + batch prepared statements + rayon parallel parsing.
 
 ## Install
 
