@@ -50,7 +50,13 @@ enum Commands {
         query: String,
     },
     /// Show graph statistics
-    Stats,
+    Stats {
+        /// Ignored positional arg — kept for friendlier UX when users type
+        /// `deagle stats <path>` expecting per-file stats. Prints a hint
+        /// pointing at `deagle keyword` instead of erroring.
+        #[arg(hide = true)]
+        hint_path: Option<PathBuf>,
+    },
     /// Structural AST pattern search (powered by ast-grep)
     #[cfg(feature = "pattern")]
     Sg {
@@ -87,7 +93,7 @@ fn main() {
         Commands::Map { dir, force } => cmd_map(&cli.db, &dir, force),
         Commands::Search { query, kind, fuzzy } => cmd_search(&cli.db, &query, kind.as_deref(), fuzzy),
         Commands::Keyword { query } => cmd_keyword(&cli.db, &query),
-        Commands::Stats => cmd_stats(&cli.db),
+        Commands::Stats { hint_path } => cmd_stats(&cli.db, hint_path.as_deref()),
         Commands::Loc { dir } => cmd_loc(&dir),
         #[cfg(feature = "pattern")]
         Commands::Sg { pattern, paths } => {
@@ -249,9 +255,39 @@ fn cmd_search(db_path: &Path, query: &str, kind: Option<&str>, fuzzy: bool) -> R
     Ok(())
 }
 
+/// Rewrite a human/agent-friendly keyword query into FTS5-safe syntax.
+///
+/// - `foo\|bar\|baz`  and `foo|bar|baz`  → `foo OR bar OR baz`
+/// - strips characters FTS5 treats as operators (`"` `(` `)` `:` `*` `-`)
+/// - collapses whitespace
+/// - if only one term remains, returns it bare (no OR wrapping)
+fn sanitize_fts5_query(raw: &str) -> String {
+    // Treat both escaped-shell `\|` and bare `|` as alternation.
+    let with_or = raw.replace("\\|", " OR ").replace('|', " OR ");
+    // Drop FTS5-significant chars that commonly sneak in from code symbols.
+    let cleaned: String = with_or
+        .chars()
+        .map(|c| match c {
+            '"' | '(' | ')' | ':' | '*' => ' ',
+            // Leading `-` means NOT in FTS5 — strip to avoid accidental negation.
+            '-' => ' ',
+            other => other,
+        })
+        .collect();
+    // Collapse runs of whitespace.
+    let collapsed: Vec<&str> = cleaned.split_whitespace().collect();
+    collapsed.join(" ")
+}
+
 fn cmd_keyword(db_path: &Path, query: &str) -> Result<(), String> {
     let db = GraphDb::open(db_path).map_err(|e| format!("Failed to open db: {}", e))?;
-    let results = db.keyword_search(query).map_err(|e| format!("Keyword search failed: {}", e))?;
+    // FTS5 has its own query syntax — it doesn't understand regex alternation.
+    // Agents (and humans) frequently pass `foo\|bar` or `foo|bar` expecting
+    // "foo OR bar". Rewrite those into FTS5 OR syntax before the query runs
+    // and strip characters FTS5 treats as operators so random input doesn't
+    // crash the parser with `fts5: syntax error near "..."`.
+    let sanitized = sanitize_fts5_query(query);
+    let results = db.keyword_search(&sanitized).map_err(|e| format!("Keyword search failed: {}", e))?;
 
     if results.is_empty() {
         eprintln!("No keyword matches for '{}'", query);
@@ -317,7 +353,14 @@ fn cmd_loc(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_stats(db_path: &Path) -> Result<(), String> {
+fn cmd_stats(db_path: &Path, hint_path: Option<&Path>) -> Result<(), String> {
+    if let Some(p) = hint_path {
+        eprintln!(
+            "note: `deagle stats` is global graph info and ignores positional paths.\n\
+             for per-file inspection try: deagle keyword \"{}\"",
+            p.file_stem().and_then(|s| s.to_str()).unwrap_or("<name>"),
+        );
+    }
     let db = GraphDb::open(db_path).map_err(|e| format!("Failed to open db: {}", e))?;
     let nodes = db.node_count().map_err(|e| e.to_string())?;
     let edges = db.edge_count().map_err(|e| e.to_string())?;
