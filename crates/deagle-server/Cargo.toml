@@ -20,8 +20,8 @@ default = ["mcp"]
 mcp = ["dep:rmcp"]
 
 [dependencies]
-deagle-core = { version = "0.1.4", path = "../deagle-core" }
-deagle-parse = { version = "0.1.4", path = "../deagle-parse", features = ["pattern", "text-search"] }
+deagle-core = { version = "0.1.5", path = "../deagle-core" }
+deagle-parse = { version = "0.1.5", path = "../deagle-parse", features = ["pattern", "text-search"] }
 axum = { version = "0.8", features = ["macros"] }
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
