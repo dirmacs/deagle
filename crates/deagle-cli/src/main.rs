@@ -56,9 +56,9 @@ enum Commands {
     Sg {
         /// AST pattern (e.g., "$X.unwrap()", "fn $NAME() { $$$ }")
         pattern: String,
-        /// Directory to search
-        #[arg(default_value = ".")]
-        dir: PathBuf,
+        /// Directory(ies) to search (default: current directory)
+        #[arg(num_args = 0.., default_value = ".")]
+        paths: Vec<PathBuf>,
     },
     /// Count lines of code by language (powered by tokei)
     Loc {
@@ -71,9 +71,9 @@ enum Commands {
     Rg {
         /// Regex pattern
         pattern: String,
-        /// Directory to search
-        #[arg(default_value = ".")]
-        dir: PathBuf,
+        /// Directory(ies) to search (default: current directory)
+        #[arg(num_args = 0.., default_value = ".")]
+        paths: Vec<PathBuf>,
         /// Filter by language (e.g., "rust", "python")
         #[arg(long)]
         lang: Option<String>,
@@ -90,9 +90,19 @@ fn main() {
         Commands::Stats => cmd_stats(&cli.db),
         Commands::Loc { dir } => cmd_loc(&dir),
         #[cfg(feature = "pattern")]
-        Commands::Sg { pattern, dir } => cmd_grep(&pattern, &dir),
+        Commands::Sg { pattern, paths } => {
+            for path in &paths {
+                cmd_grep(&pattern, path)?;
+            }
+            Ok(())
+        },
         #[cfg(feature = "text-search")]
-        Commands::Rg { pattern, dir, lang } => cmd_rg(&pattern, &dir, lang.as_deref()),
+        Commands::Rg { pattern, paths, lang } => {
+            for path in &paths {
+                cmd_rg(&pattern, path, lang.as_deref())?;
+            }
+            Ok(())
+        },
     };
 
     if let Err(e) = result {
