@@ -91,17 +91,11 @@ fn main() {
         Commands::Loc { dir } => cmd_loc(&dir),
         #[cfg(feature = "pattern")]
         Commands::Sg { pattern, paths } => {
-            for path in &paths {
-                cmd_grep(&pattern, path)?;
-            }
-            Ok(())
+            paths.iter().try_for_each(|path| cmd_grep(&pattern, path))
         },
         #[cfg(feature = "text-search")]
         Commands::Rg { pattern, paths, lang } => {
-            for path in &paths {
-                cmd_rg(&pattern, path, lang.as_deref())?;
-            }
-            Ok(())
+            paths.iter().try_for_each(|path| cmd_rg(&pattern, path, lang.as_deref()))
         },
     };
 
@@ -383,8 +377,8 @@ fn grep_walk(root: &Path, _dir: &Path, pattern: &str, total: &mut usize) -> Resu
 }
 
 #[cfg(feature = "text-search")]
-fn cmd_rg(pattern: &str, dir: &Path, lang: Option<&str>) -> Result<(), String> {
-    use deagle_parse::text_search::search_directory;
+fn cmd_rg(pattern: &str, path: &Path, lang: Option<&str>) -> Result<(), String> {
+    use deagle_parse::text_search::{search_directory, search_file};
 
     let lang_filter = lang.map(|l| Language::from_extension(match l {
         "rust" => "rs",
@@ -398,8 +392,21 @@ fn cmd_rg(pattern: &str, dir: &Path, lang: Option<&str>) -> Result<(), String> {
         other => other,
     }));
 
-    let matches = search_directory(dir, pattern, lang_filter)
-        .map_err(|e| format!("Search failed: {}", e))?;
+    if !path.exists() {
+        return Err(format!("Path not found: {}", path.display()));
+    }
+
+    let matches = if path.is_file() {
+        // Single-file search: skip the directory walker so callers can
+        // target specific files (matches ripgrep's `rg PAT file` UX).
+        let content = std::fs::read(path)
+            .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+        search_file(path, &content, pattern)
+            .map_err(|e| format!("Search failed: {}", e))?
+    } else {
+        search_directory(path, pattern, lang_filter)
+            .map_err(|e| format!("Search failed: {}", e))?
+    };
 
     if matches.is_empty() {
         eprintln!("No matches for '{}'", pattern);
