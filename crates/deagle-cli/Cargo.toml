@@ -16,8 +16,8 @@ pattern = ["deagle-parse/pattern"]
 text-search = ["deagle-parse/text-search"]
 
 [dependencies]
-deagle-core = { version = "0.1.5", path = "../deagle-core" }
-deagle-parse = { version = "0.1.5", path = "../deagle-parse" }
+deagle-core = { version = "0.1.6", path = "../deagle-core" }
+deagle-parse = { version = "0.1.6", path = "../deagle-parse" }
 clap = { version = "4", features = ["derive"] }
 ignore = "0.4"
 rayon = "1.10"
