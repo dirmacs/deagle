@@ -5,7 +5,7 @@
 <h1 align="center">deagle</h1>
 
 <p align="center">
-  Rust-native code intelligence. Single binary, no Docker, no external services.<br>
+  Rust-native code intelligence. Single binary. Runs anywhere Rust runs.<br>
   Built by <a href="https://dirmacs.com">DIRMACS</a>. <strong><a href="https://dirmacs.github.io/deagle">Documentation</a></strong>
 </p>
 
@@ -21,7 +21,7 @@
 - **LOC counting**: per-language breakdown (tokei)
 - **Graph DB**: SQLite WAL mode with nodes, edges, file hashes, FTS5
 - **Parallel parsing**: rayon for multi-core indexing, batch inserts
-- **Single binary** — no Docker, no external services
+- **Single binary** — runs anywhere Rust runs, zero runtime dependencies
 
 ## Performance
 
@@ -117,6 +117,16 @@ Tools: `deagle_search`, `deagle_stats`, `deagle_map`, `deagle_sg`, `deagle_rg`
 | Python | tree-sitter-python | functions, methods, classes, imports, constants, decorators |
 | Go | tree-sitter-go | functions, methods, structs, interfaces, type aliases, imports, constants |
 | TypeScript/JS | tree-sitter-typescript | functions, arrow functions, methods, classes, interfaces, enums, type aliases, imports |
+
+## DIRMACS ecosystem
+
+| Project | What |
+|---------|------|
+| [openeruka](https://github.com/dirmacs/openeruka) | OSS self-hosted memory server — SQLite-backed Eruka-compatible backend |
+| [eruka-mcp](https://github.com/dirmacs/eruka-mcp) | MCP server for Eruka — anti-hallucination context memory for AI agents |
+| [pawan](https://github.com/dirmacs/pawan) | Rust-first CLI coding agent — uses deagle for code intelligence |
+| [ares](https://github.com/dirmacs/ares) | Multi-agent runtime — RAG, tool calling, MCP, workflows |
+| [dstack](https://github.com/dirmacs/dstack) | Dev stack tooling — project scaffolding, swarm harness, CI audit gates |
 
 ## License
 
