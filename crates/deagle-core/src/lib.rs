@@ -193,6 +193,7 @@ impl std::fmt::Display for EdgeKind {
 /// Errors from deagle operations.
 #[derive(Debug, thiserror::Error)]
 pub enum DeagleError {
+    #[cfg(feature = "sqlite")]
     #[error("Database error: {0}")]
     Database(#[from] rusqlite::Error),
     #[error("IO error: {0}")]
@@ -205,11 +206,13 @@ pub enum DeagleError {
 
 pub type Result<T> = std::result::Result<T, DeagleError>;
 
+#[cfg(feature = "sqlite")]
 /// SQLite-backed code graph database.
 pub struct GraphDb {
     conn: rusqlite::Connection,
 }
 
+#[cfg(feature = "sqlite")]
 impl GraphDb {
     /// Open or create a graph database at the given path.
     pub fn open(path: &std::path::Path) -> Result<Self> {
@@ -532,7 +535,7 @@ impl GraphDb {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
 
