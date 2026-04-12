@@ -43,6 +43,14 @@ enum Commands {
         /// Use fuzzy matching (ranked by score) instead of substring
         #[arg(long)]
         fuzzy: bool,
+        /// Filter by language (e.g., "rust", "python", "go", "typescript")
+        #[arg(long, short = 'l')]
+        lang: Option<String>,
+        /// Directory/file paths to scope the search (default: use graph DB).
+        /// When paths are provided and no graph.db exists, falls back to
+        /// ripgrep-style text search scoped to those paths.
+        #[arg(num_args = 0..)]
+        paths: Vec<PathBuf>,
     },
     /// Full-text keyword search (BM25 ranked via FTS5)
     Keyword {
@@ -91,7 +99,9 @@ fn main() {
 
     let result = match cli.command {
         Commands::Map { dir, force } => cmd_map(&cli.db, &dir, force),
-        Commands::Search { query, kind, fuzzy } => cmd_search(&cli.db, &query, kind.as_deref(), fuzzy),
+        Commands::Search { query, kind, fuzzy, lang, paths } => {
+            cmd_search(&cli.db, &query, kind.as_deref(), fuzzy, lang.as_deref(), &paths)
+        }
         Commands::Keyword { query } => cmd_keyword(&cli.db, &query),
         Commands::Stats { hint_path } => cmd_stats(&cli.db, hint_path.as_deref()),
         Commands::Loc { dir } => cmd_loc(&dir),
@@ -223,7 +233,63 @@ fn cmd_map(db_path: &Path, dir: &Path, force: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_search(db_path: &Path, query: &str, kind: Option<&str>, fuzzy: bool) -> Result<(), String> {
+fn cmd_search(
+    db_path: &Path,
+    query: &str,
+    kind: Option<&str>,
+    fuzzy: bool,
+    lang: Option<&str>,
+    paths: &[PathBuf],
+) -> Result<(), String> {
+    // If the graph DB doesn't exist, give an actionable message.
+    // When paths are provided, fall back to ripgrep text search instead of erroring.
+    if !db_path.exists() {
+        if !paths.is_empty() {
+            // Fallback: paths provided — do ripgrep-style text search
+            eprintln!(
+                "note: no graph database found at '{}' — falling back to text search.\n\
+                 Run `deagle map <DIR>` to build the graph for faster, structured results.",
+                db_path.display()
+            );
+            #[cfg(feature = "text-search")]
+            {
+                use deagle_parse::text_search::search_directory;
+                for path in paths {
+                    let lang_filter = lang.map(|l| Language::from_extension(match l {
+                        "rust" | "rs" => "rs",
+                        "python" | "py" => "py",
+                        "go" => "go",
+                        "typescript" | "ts" => "ts",
+                        "javascript" | "js" => "js",
+                        other => other,
+                    }));
+                    match search_directory(path, query, lang_filter) {
+                        Ok(matches) if !matches.is_empty() => {
+                            for m in &matches {
+                                println!("{}:{}: {}", m.file_path, m.line_number, m.line);
+                            }
+                            eprintln!("\n{} text match(es) in {}", matches.len(), path.display());
+                        }
+                        Ok(_) => eprintln!("No matches in {}", path.display()),
+                        Err(e) => eprintln!("text search error: {}", e),
+                    }
+                }
+                return Ok(());
+            }
+            #[cfg(not(feature = "text-search"))]
+            return Err(format!(
+                "no graph database at '{}'. Run `deagle map <DIR>` first.",
+                db_path.display()
+            ));
+        }
+        return Err(format!(
+            "no graph database found at '{}'.\n\
+             Run `deagle map <DIR>` to build the graph, then retry.\n\
+             Tip: `deagle map .` indexes the current directory.",
+            db_path.display()
+        ));
+    }
+
     let db = GraphDb::open(db_path).map_err(|e| format!("Failed to open db: {}", e))?;
     let results = if fuzzy {
         db.fuzzy_search_nodes(query).map_err(|e| format!("Search failed: {}", e))?
@@ -231,8 +297,55 @@ fn cmd_search(db_path: &Path, query: &str, kind: Option<&str>, fuzzy: bool) -> R
         db.search_nodes(query).map_err(|e| format!("Search failed: {}", e))?
     };
 
+    // Apply kind filter
     let results: Vec<_> = if let Some(k) = kind {
         results.into_iter().filter(|n| n.kind.to_string() == k).collect()
+    } else {
+        results
+    };
+
+    // Apply language filter (--lang / -l)
+    let results: Vec<_> = if let Some(l) = lang {
+        let l_lower = l.to_lowercase();
+        results.into_iter().filter(|n| {
+            let lang_str = n.language.to_string(); // Display impl returns "rust", "python", etc.
+            lang_str == l_lower
+                || match l_lower.as_str() {
+                    "rust" | "rs" => lang_str == "rust",
+                    "python" | "py" => lang_str == "python",
+                    "go" => lang_str == "go",
+                    "typescript" | "ts" => lang_str == "typescript",
+                    "javascript" | "js" => lang_str == "javascript",
+                    _ => lang_str.starts_with(&l_lower),
+                }
+        }).collect()
+    } else {
+        results
+    };
+
+    // Apply path scope filter (positional paths).
+    // The graph stores paths relative to the indexed root (e.g. "crates/foo/src/bar.rs").
+    // Users may pass absolute paths (/opt/eruka/crates) or relative ones.
+    // Match if:
+    //   (a) stored path starts with the given path, OR
+    //   (b) stored path contains any component of the given path as a substring
+    let results: Vec<_> = if !paths.is_empty() {
+        results.into_iter().filter(|n| {
+            paths.iter().any(|p| {
+                let p_str = p.to_string_lossy();
+                // Strip trailing slash for comparison
+                let p_norm = p_str.trim_end_matches('/');
+                // (a) exact prefix match (handles relative paths)
+                n.file_path.starts_with(p_norm)
+                    // (b) the last N components of p appear anywhere in n.file_path
+                    || p.components().last().map(|c| {
+                        let last = c.as_os_str().to_string_lossy();
+                        n.file_path.contains(last.as_ref())
+                    }).unwrap_or(false)
+                    // (c) given path is a suffix of stored path
+                    || n.file_path.ends_with(p_norm)
+            })
+        }).collect()
     } else {
         results
     };
@@ -383,11 +496,75 @@ fn cmd_grep(pattern: &str, dir: &Path) -> Result<(), String> {
     grep_walk(dir, dir, pattern, &mut total)?;
 
     if total == 0 {
-        eprintln!("No matches found");
+        // AST pattern returned nothing. Try two fallbacks:
+        // 1. If pattern looks like an incomplete declaration (no braces/parens),
+        //    suggest the completed form.
+        // 2. Fall back to ripgrep text search with the same string.
+        let hint = suggest_pattern_completion(pattern);
+        if let Some(ref completed) = hint {
+            eprintln!("note: ast pattern found 0 matches. Trying completed form: {}", completed);
+            let mut total2 = 0;
+            grep_walk(dir, dir, completed, &mut total2)?;
+            if total2 > 0 {
+                eprintln!("\n{} match(es) (with completed pattern '{}')", total2, completed);
+                eprintln!("tip: use `deagle sg \"{}\"` next time for direct match.", completed);
+                return Ok(());
+            }
+        }
+
+        // Final fallback: plain text search
+        eprintln!(
+            "No AST matches found.\n\
+             tip: AST patterns need full syntax, e.g. `pub enum Foo {{ $$$ }}`\n\
+             Falling back to text search for '{}':", pattern
+        );
+        #[cfg(feature = "text-search")]
+        {
+            use deagle_parse::text_search::search_directory;
+            if let Ok(matches) = search_directory(dir, pattern, None) {
+                if matches.is_empty() {
+                    eprintln!("No text matches either.");
+                } else {
+                    for m in &matches {
+                        println!("{}:{}: {}", m.file_path, m.line_number, m.line);
+                    }
+                    eprintln!("\n{} text match(es)", matches.len());
+                }
+            }
+        }
+        #[cfg(not(feature = "text-search"))]
+        eprintln!("No matches found. Enable the 'text-search' feature for ripgrep fallback.");
     } else {
         eprintln!("\n{} match(es)", total);
     }
     Ok(())
+}
+
+/// Suggest a completed ast-grep pattern when the user writes an incomplete declaration.
+/// e.g. `pub enum Foo` → `pub enum Foo { $$$ }`
+///      `pub struct Foo` → `pub struct Foo { $$$ }`
+///      `fn foo` → `fn foo($$$) { $$$ }`
+///      `pub fn foo` → `pub fn foo($$$) { $$$ }`
+#[cfg(feature = "pattern")]
+fn suggest_pattern_completion(pattern: &str) -> Option<String> {
+    let t = pattern.trim();
+    // Already has braces/parens — no completion needed
+    if t.contains('{') || t.contains('(') { return None; }
+
+    let words: Vec<&str> = t.split_whitespace().collect();
+    match words.as_slice() {
+        // `pub enum Foo` | `enum Foo`
+        [.., "enum", _name] => Some(format!("{} {{ $$$ }}", t)),
+        // `pub struct Foo` | `struct Foo`
+        [.., "struct", _name] => Some(format!("{} {{ $$$ }}", t)),
+        // `pub trait Foo` | `trait Foo`
+        [.., "trait", _name] => Some(format!("{} {{ $$$ }}", t)),
+        // `pub fn foo` | `fn foo` | `async fn foo`
+        [.., "fn", _name] => Some(format!("{}($$$) {{ $$$ }}", t)),
+        // `impl Foo` | `impl Trait for Foo`
+        ["impl", ..] if !t.contains('{') => Some(format!("{} {{ $$$ }}", t)),
+        _ => None,
+    }
 }
 
 #[cfg(feature = "pattern")]
