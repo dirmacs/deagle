@@ -1,8 +1,8 @@
 //! C language parser using tree-sitter-c.
 
+use crate::ParseResult;
 use deagle_core::{DeagleError, EdgeKind, Language, Node, NodeKind, Result};
 use std::path::Path;
-use crate::ParseResult;
 
 pub fn parse(path: &Path, content: &str) -> Result<Vec<Node>> {
     parse_with_edges(path, content).map(|r| r.nodes)
@@ -11,15 +11,19 @@ pub fn parse(path: &Path, content: &str) -> Result<Vec<Node>> {
 pub fn parse_with_edges(path: &Path, content: &str) -> Result<ParseResult> {
     let mut parser = tree_sitter::Parser::new();
     let language = tree_sitter_c::LANGUAGE;
-    parser.set_language(&language.into()).map_err(|e| DeagleError::Parse {
-        file: path.display().to_string(),
-        message: format!("Failed to set language: {}", e),
-    })?;
+    parser
+        .set_language(&language.into())
+        .map_err(|e| DeagleError::Parse {
+            file: path.display().to_string(),
+            message: format!("Failed to set language: {}", e),
+        })?;
 
-    let tree = parser.parse(content, None).ok_or_else(|| DeagleError::Parse {
-        file: path.display().to_string(),
-        message: "Failed to parse file".into(),
-    })?;
+    let tree = parser
+        .parse(content, None)
+        .ok_or_else(|| DeagleError::Parse {
+            file: path.display().to_string(),
+            message: "Failed to parse file".into(),
+        })?;
 
     let mut nodes = Vec::new();
     let file_path = path.to_string_lossy().to_string();
@@ -27,7 +31,11 @@ pub fn parse_with_edges(path: &Path, content: &str) -> Result<ParseResult> {
 
     nodes.push(Node {
         id: 0,
-        name: path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string(),
+        name: path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string(),
         kind: NodeKind::File,
         language: lang,
         file_path: file_path.clone(),
@@ -45,12 +53,21 @@ pub fn parse_with_edges(path: &Path, content: &str) -> Result<ParseResult> {
     Ok(ParseResult { nodes, edges })
 }
 
-fn extract_definitions(node: tree_sitter::Node, source: &str, file_path: &str, results: &mut Vec<Node>) {
+fn extract_definitions(
+    node: tree_sitter::Node,
+    source: &str,
+    file_path: &str,
+    results: &mut Vec<Node>,
+) {
     let kind = match node.kind() {
         "function_definition" => Some(NodeKind::Function),
         "declaration" => {
             // Check if it's a function declaration (prototype) or variable
-            if node.child_by_field_name("declarator").map(|d| d.kind() == "function_declarator").unwrap_or(false) {
+            if node
+                .child_by_field_name("declarator")
+                .map(|d| d.kind() == "function_declarator")
+                .unwrap_or(false)
+            {
                 Some(NodeKind::Function)
             } else {
                 None
@@ -76,21 +93,25 @@ fn extract_definitions(node: tree_sitter::Node, source: &str, file_path: &str, r
         _ => None,
     };
 
-    if let Some(kind) = kind {
-        if let Some(name) = extract_name(node, source, kind) {
-            let start = node.start_position();
-            let end = node.end_position();
-            let content = node.utf8_text(source.as_bytes()).ok().map(|s| {
-                crate::truncate_content(s, 500)
-            });
-            results.push(Node {
-                id: 0, name, kind, language: Language::C,
-                file_path: file_path.to_string(),
-                line_start: (start.row + 1) as u32,
-                line_end: (end.row + 1) as u32,
-                content,
-            });
-        }
+    if let Some(kind) = kind
+        && let Some(name) = extract_name(node, source, kind)
+    {
+        let start = node.start_position();
+        let end = node.end_position();
+        let content = node
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(|s| crate::truncate_content(s, 500));
+        results.push(Node {
+            id: 0,
+            name,
+            kind,
+            language: Language::C,
+            file_path: file_path.to_string(),
+            line_start: (start.row + 1) as u32,
+            line_end: (end.row + 1) as u32,
+            content,
+        });
     }
 
     let mut cursor = node.walk();
@@ -101,7 +122,10 @@ fn extract_definitions(node: tree_sitter::Node, source: &str, file_path: &str, r
 
 fn extract_name(node: tree_sitter::Node, source: &str, kind: NodeKind) -> Option<String> {
     match kind {
-        NodeKind::Import => node.utf8_text(source.as_bytes()).ok().map(|s| s.trim().to_string()),
+        NodeKind::Import => node
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(|s| s.trim().to_string()),
         NodeKind::Constant => {
             // #define NAME ...
             node.child_by_field_name("name")
@@ -127,23 +151,22 @@ fn extract_name(node: tree_sitter::Node, source: &str, kind: NodeKind) -> Option
             }
             find_fn_name(node, source)
         }
-        NodeKind::Struct | NodeKind::Enum => {
-            node.child_by_field_name("name")
-                .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                .map(|s| s.to_string())
-        }
+        NodeKind::Struct | NodeKind::Enum => node
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .map(|s| s.to_string()),
         NodeKind::TypeAlias => {
             // typedef ... name;  — last identifier before semicolon
-            node.child_by_field_name("declarator")
-                .and_then(|n| {
-                    if n.kind() == "type_identifier" {
-                        n.utf8_text(source.as_bytes()).ok().map(|s| s.to_string())
-                    } else {
-                        None
-                    }
-                })
+            node.child_by_field_name("declarator").and_then(|n| {
+                if n.kind() == "type_identifier" {
+                    n.utf8_text(source.as_bytes()).ok().map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
         }
-        _ => node.child_by_field_name("name")
+        _ => node
+            .child_by_field_name("name")
             .and_then(|n| n.utf8_text(source.as_bytes()).ok())
             .map(|s| s.to_string()),
     }
@@ -206,7 +229,10 @@ int main(int argc, char *argv[]) {
     fn test_parse_c_functions() {
         let path = PathBuf::from("main.c");
         let nodes = parse(&path, SAMPLE_C).unwrap();
-        let fns: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+        let fns: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Function)
+            .collect();
         assert!(fns.iter().any(|f| f.name == "add"));
         assert!(fns.iter().any(|f| f.name == "print_point"));
         assert!(fns.iter().any(|f| f.name == "main"));
@@ -216,7 +242,10 @@ int main(int argc, char *argv[]) {
     fn test_parse_c_struct() {
         let path = PathBuf::from("main.c");
         let nodes = parse(&path, SAMPLE_C).unwrap();
-        let structs: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Struct).collect();
+        let structs: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Struct)
+            .collect();
         assert_eq!(structs.len(), 1);
         assert_eq!(structs[0].name, "Point");
     }
@@ -225,7 +254,10 @@ int main(int argc, char *argv[]) {
     fn test_parse_c_defines() {
         let path = PathBuf::from("main.c");
         let nodes = parse(&path, SAMPLE_C).unwrap();
-        let consts: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Constant).collect();
+        let consts: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Constant)
+            .collect();
         assert!(consts.iter().any(|c| c.name == "MAX_SIZE"));
         assert!(consts.iter().any(|c| c.name == "VERSION"));
     }

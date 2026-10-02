@@ -99,20 +99,35 @@ fn main() {
 
     let result = match cli.command {
         Commands::Map { dir, force } => cmd_map(&cli.db, &dir, force),
-        Commands::Search { query, kind, fuzzy, lang, paths } => {
-            cmd_search(&cli.db, &query, kind.as_deref(), fuzzy, lang.as_deref(), &paths)
-        }
+        Commands::Search {
+            query,
+            kind,
+            fuzzy,
+            lang,
+            paths,
+        } => cmd_search(
+            &cli.db,
+            &query,
+            kind.as_deref(),
+            fuzzy,
+            lang.as_deref(),
+            &paths,
+        ),
         Commands::Keyword { query } => cmd_keyword(&cli.db, &query),
         Commands::Stats { hint_path } => cmd_stats(&cli.db, hint_path.as_deref()),
         Commands::Loc { dir } => cmd_loc(&dir),
         #[cfg(feature = "pattern")]
         Commands::Sg { pattern, paths } => {
             paths.iter().try_for_each(|path| cmd_grep(&pattern, path))
-        },
+        }
         #[cfg(feature = "text-search")]
-        Commands::Rg { pattern, paths, lang } => {
-            paths.iter().try_for_each(|path| cmd_rg(&pattern, path, lang.as_deref()))
-        },
+        Commands::Rg {
+            pattern,
+            paths,
+            lang,
+        } => paths
+            .iter()
+            .try_for_each(|path| cmd_rg(&pattern, path, lang.as_deref())),
     };
 
     if let Err(e) = result {
@@ -131,7 +146,8 @@ fn cmd_map(db_path: &Path, dir: &Path, force: bool) -> Result<(), String> {
     let db = GraphDb::open(db_path).map_err(|e| format!("Failed to open db: {}", e))?;
 
     if force {
-        db.clear().map_err(|e| format!("Failed to clear db: {}", e))?;
+        db.clear()
+            .map_err(|e| format!("Failed to clear db: {}", e))?;
         eprintln!("Full re-index of {}...", dir.display());
     } else {
         eprintln!("Incremental index of {}...", dir.display());
@@ -139,7 +155,10 @@ fn cmd_map(db_path: &Path, dir: &Path, force: bool) -> Result<(), String> {
 
     // Collect file paths first (ignore-aware)
     let files: Vec<_> = ignore::WalkBuilder::new(dir)
-        .hidden(true).git_ignore(true).git_global(true).git_exclude(true)
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
         .build()
         .flatten()
         .filter(|e| e.path().is_file())
@@ -150,32 +169,42 @@ fn cmd_map(db_path: &Path, dir: &Path, force: bool) -> Result<(), String> {
         .collect();
 
     // Pre-filter: check hashes sequentially (SQLite not thread-safe), then parse in parallel
-    let files_to_parse: Vec<_> = files.iter().filter(|entry| {
-        if force { return true; }
-        let path = entry.path();
-        let rel_path = path.strip_prefix(dir).unwrap_or(path);
-        let rel_str = rel_path.to_string_lossy();
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) if !c.is_empty() => c,
-            _ => return false,
-        };
-        db.needs_reindex(&rel_str, &content).unwrap_or(true)
-    }).collect();
+    let files_to_parse: Vec<_> = files
+        .iter()
+        .filter(|entry| {
+            if force {
+                return true;
+            }
+            let path = entry.path();
+            let rel_path = path.strip_prefix(dir).unwrap_or(path);
+            let rel_str = rel_path.to_string_lossy();
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) if !c.is_empty() => c,
+                _ => return false,
+            };
+            db.needs_reindex(&rel_str, &content).unwrap_or(true)
+        })
+        .collect();
 
     // Parse changed files in parallel with rayon
-    let results: Vec<_> = files_to_parse.par_iter().filter_map(|entry| {
-        let path = entry.path();
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let lang = Language::from_extension(ext);
-        let content = std::fs::read_to_string(path).ok()?;
-        if content.is_empty() { return None; }
-        let rel_path = path.strip_prefix(dir).unwrap_or(path);
-        let rel_str = rel_path.to_string_lossy().to_string();
+    let results: Vec<_> = files_to_parse
+        .par_iter()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let lang = Language::from_extension(ext);
+            let content = std::fs::read_to_string(path).ok()?;
+            if content.is_empty() {
+                return None;
+            }
+            let rel_path = path.strip_prefix(dir).unwrap_or(path);
+            let rel_str = rel_path.to_string_lossy().to_string();
 
-        deagle_parse::parse_file_with_edges(rel_path, &content, lang)
-            .ok()
-            .map(|r| (rel_str, content, r))
-    }).collect();
+            deagle_parse::parse_file_with_edges(rel_path, &content, lang)
+                .ok()
+                .map(|r| (rel_str, content, r))
+        })
+        .collect();
 
     // Batch insert into DB (single transaction per file for speed)
     let mut file_count = 0;
@@ -183,7 +212,9 @@ fn cmd_map(db_path: &Path, dir: &Path, force: bool) -> Result<(), String> {
     let mut edge_count = 0;
 
     for (rel_path, content, result) in &results {
-        if result.nodes.is_empty() { continue; }
+        if result.nodes.is_empty() {
+            continue;
+        }
 
         // Incremental: remove old data for this file before re-inserting
         if !force {
@@ -203,10 +234,14 @@ fn cmd_map(db_path: &Path, dir: &Path, force: bool) -> Result<(), String> {
         let _ = db.store_file_hash(rel_path, content);
 
         // Collect resolved edges and batch insert
-        let resolved_edges: Vec<(i64, i64, EdgeKind)> = result.edges.iter()
+        let resolved_edges: Vec<(i64, i64, EdgeKind)> = result
+            .edges
+            .iter()
             .filter(|(from_idx, to_idx, _)| {
-                *from_idx < db_ids.len() && *to_idx < db_ids.len()
-                    && db_ids[*from_idx] > 0 && db_ids[*to_idx] > 0
+                *from_idx < db_ids.len()
+                    && *to_idx < db_ids.len()
+                    && db_ids[*from_idx] > 0
+                    && db_ids[*to_idx] > 0
             })
             .map(|(from_idx, to_idx, kind)| (db_ids[*from_idx], db_ids[*to_idx], *kind))
             .collect();
@@ -216,7 +251,10 @@ fn cmd_map(db_path: &Path, dir: &Path, force: bool) -> Result<(), String> {
             // Insert edges in their own batch (nodes already committed)
             for (from_id, to_id, kind) in &resolved_edges {
                 let _ = db.insert_edge(&Edge {
-                    from_id: *from_id, to_id: *to_id, kind: *kind, confidence: 1.0,
+                    from_id: *from_id,
+                    to_id: *to_id,
+                    kind: *kind,
+                    confidence: 1.0,
                 });
             }
         }
@@ -225,9 +263,15 @@ fn cmd_map(db_path: &Path, dir: &Path, force: bool) -> Result<(), String> {
     let total_files = files.len();
     let skipped = total_files - file_count;
     if skipped > 0 {
-        eprintln!("Indexed {} files ({} unchanged, skipped), {} entities, {} edges", file_count, skipped, node_count, edge_count);
+        eprintln!(
+            "Indexed {} files ({} unchanged, skipped), {} entities, {} edges",
+            file_count, skipped, node_count, edge_count
+        );
     } else {
-        eprintln!("Indexed {} files, {} entities, {} edges", file_count, node_count, edge_count);
+        eprintln!(
+            "Indexed {} files, {} entities, {} edges",
+            file_count, node_count, edge_count
+        );
     }
     eprintln!("Database: {}", db_path.display());
     Ok(())
@@ -255,14 +299,16 @@ fn cmd_search(
             {
                 use deagle_parse::text_search::search_directory;
                 for path in paths {
-                    let lang_filter = lang.map(|l| Language::from_extension(match l {
-                        "rust" | "rs" => "rs",
-                        "python" | "py" => "py",
-                        "go" => "go",
-                        "typescript" | "ts" => "ts",
-                        "javascript" | "js" => "js",
-                        other => other,
-                    }));
+                    let lang_filter = lang.map(|l| {
+                        Language::from_extension(match l {
+                            "rust" | "rs" => "rs",
+                            "python" | "py" => "py",
+                            "go" => "go",
+                            "typescript" | "ts" => "ts",
+                            "javascript" | "js" => "js",
+                            other => other,
+                        })
+                    });
                     match search_directory(path, query, lang_filter) {
                         Ok(matches) if !matches.is_empty() => {
                             for m in &matches {
@@ -292,14 +338,19 @@ fn cmd_search(
 
     let db = GraphDb::open(db_path).map_err(|e| format!("Failed to open db: {}", e))?;
     let results = if fuzzy {
-        db.fuzzy_search_nodes(query).map_err(|e| format!("Search failed: {}", e))?
+        db.fuzzy_search_nodes(query)
+            .map_err(|e| format!("Search failed: {}", e))?
     } else {
-        db.search_nodes(query).map_err(|e| format!("Search failed: {}", e))?
+        db.search_nodes(query)
+            .map_err(|e| format!("Search failed: {}", e))?
     };
 
     // Apply kind filter
     let results: Vec<_> = if let Some(k) = kind {
-        results.into_iter().filter(|n| n.kind.to_string() == k).collect()
+        results
+            .into_iter()
+            .filter(|n| n.kind.to_string() == k)
+            .collect()
     } else {
         results
     };
@@ -307,18 +358,21 @@ fn cmd_search(
     // Apply language filter (--lang / -l)
     let results: Vec<_> = if let Some(l) = lang {
         let l_lower = l.to_lowercase();
-        results.into_iter().filter(|n| {
-            let lang_str = n.language.to_string(); // Display impl returns "rust", "python", etc.
-            lang_str == l_lower
-                || match l_lower.as_str() {
-                    "rust" | "rs" => lang_str == "rust",
-                    "python" | "py" => lang_str == "python",
-                    "go" => lang_str == "go",
-                    "typescript" | "ts" => lang_str == "typescript",
-                    "javascript" | "js" => lang_str == "javascript",
-                    _ => lang_str.starts_with(&l_lower),
-                }
-        }).collect()
+        results
+            .into_iter()
+            .filter(|n| {
+                let lang_str = n.language.to_string(); // Display impl returns "rust", "python", etc.
+                lang_str == l_lower
+                    || match l_lower.as_str() {
+                        "rust" | "rs" => lang_str == "rust",
+                        "python" | "py" => lang_str == "python",
+                        "go" => lang_str == "go",
+                        "typescript" | "ts" => lang_str == "typescript",
+                        "javascript" | "js" => lang_str == "javascript",
+                        _ => lang_str.starts_with(&l_lower),
+                    }
+            })
+            .collect()
     } else {
         results
     };
@@ -330,22 +384,25 @@ fn cmd_search(
     //   (a) stored path starts with the given path, OR
     //   (b) stored path contains any component of the given path as a substring
     let results: Vec<_> = if !paths.is_empty() {
-        results.into_iter().filter(|n| {
-            paths.iter().any(|p| {
-                let p_str = p.to_string_lossy();
-                // Strip trailing slash for comparison
-                let p_norm = p_str.trim_end_matches('/');
-                // (a) exact prefix match (handles relative paths)
-                n.file_path.starts_with(p_norm)
+        results
+            .into_iter()
+            .filter(|n| {
+                paths.iter().any(|p| {
+                    let p_str = p.to_string_lossy();
+                    // Strip trailing slash for comparison
+                    let p_norm = p_str.trim_end_matches('/');
+                    // (a) exact prefix match (handles relative paths)
+                    n.file_path.starts_with(p_norm)
                     // (b) the last N components of p appear anywhere in n.file_path
-                    || p.components().last().map(|c| {
+                    || p.components().next_back().map(|c| {
                         let last = c.as_os_str().to_string_lossy();
                         n.file_path.contains(last.as_ref())
                     }).unwrap_or(false)
                     // (c) given path is a suffix of stored path
                     || n.file_path.ends_with(p_norm)
+                })
             })
-        }).collect()
+            .collect()
     } else {
         results
     };
@@ -400,7 +457,9 @@ fn cmd_keyword(db_path: &Path, query: &str) -> Result<(), String> {
     // and strip characters FTS5 treats as operators so random input doesn't
     // crash the parser with `fts5: syntax error near "..."`.
     let sanitized = sanitize_fts5_query(query);
-    let results = db.keyword_search(&sanitized).map_err(|e| format!("Keyword search failed: {}", e))?;
+    let results = db
+        .keyword_search(&sanitized)
+        .map_err(|e| format!("Keyword search failed: {}", e))?;
 
     if results.is_empty() {
         eprintln!("No keyword matches for '{}'", query);
@@ -432,7 +491,10 @@ fn cmd_loc(dir: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    println!("{:<20} {:>8} {:>8} {:>8} {:>8}", "LANGUAGE", "FILES", "CODE", "COMMENTS", "BLANKS");
+    println!(
+        "{:<20} {:>8} {:>8} {:>8} {:>8}",
+        "LANGUAGE", "FILES", "CODE", "COMMENTS", "BLANKS"
+    );
     println!("{}", "-".repeat(60));
 
     let mut total_files = 0usize;
@@ -441,7 +503,7 @@ fn cmd_loc(dir: &Path) -> Result<(), String> {
     let mut total_blanks = 0usize;
 
     let mut sorted: Vec<_> = languages.iter().collect();
-    sorted.sort_by(|a, b| b.1.code.cmp(&a.1.code));
+    sorted.sort_by_key(|a| std::cmp::Reverse(a.1.code));
 
     for (lang_type, lang) in &sorted {
         if lang.code == 0 && lang.comments == 0 {
@@ -450,7 +512,11 @@ fn cmd_loc(dir: &Path) -> Result<(), String> {
         let files = lang.reports.len();
         println!(
             "{:<20} {:>8} {:>8} {:>8} {:>8}",
-            format!("{}", lang_type), files, lang.code, lang.comments, lang.blanks
+            format!("{}", lang_type),
+            files,
+            lang.code,
+            lang.comments,
+            lang.blanks
         );
         total_files += files;
         total_code += lang.code;
@@ -502,12 +568,21 @@ fn cmd_grep(pattern: &str, dir: &Path) -> Result<(), String> {
         // 2. Fall back to ripgrep text search with the same string.
         let hint = suggest_pattern_completion(pattern);
         if let Some(ref completed) = hint {
-            eprintln!("note: ast pattern found 0 matches. Trying completed form: {}", completed);
+            eprintln!(
+                "note: ast pattern found 0 matches. Trying completed form: {}",
+                completed
+            );
             let mut total2 = 0;
             grep_walk(dir, dir, completed, &mut total2)?;
             if total2 > 0 {
-                eprintln!("\n{} match(es) (with completed pattern '{}')", total2, completed);
-                eprintln!("tip: use `deagle sg \"{}\"` next time for direct match.", completed);
+                eprintln!(
+                    "\n{} match(es) (with completed pattern '{}')",
+                    total2, completed
+                );
+                eprintln!(
+                    "tip: use `deagle sg \"{}\"` next time for direct match.",
+                    completed
+                );
                 return Ok(());
             }
         }
@@ -516,7 +591,8 @@ fn cmd_grep(pattern: &str, dir: &Path) -> Result<(), String> {
         eprintln!(
             "No AST matches found.\n\
              tip: AST patterns need full syntax, e.g. `pub enum Foo {{ $$$ }}`\n\
-             Falling back to text search for '{}':", pattern
+             Falling back to text search for '{}':",
+            pattern
         );
         #[cfg(feature = "text-search")]
         {
@@ -549,7 +625,9 @@ fn cmd_grep(pattern: &str, dir: &Path) -> Result<(), String> {
 fn suggest_pattern_completion(pattern: &str) -> Option<String> {
     let t = pattern.trim();
     // Already has braces/parens — no completion needed
-    if t.contains('{') || t.contains('(') { return None; }
+    if t.contains('{') || t.contains('(') {
+        return None;
+    }
 
     let words: Vec<&str> = t.split_whitespace().collect();
     match words.as_slice() {
@@ -572,23 +650,36 @@ fn grep_walk(root: &Path, _dir: &Path, pattern: &str, total: &mut usize) -> Resu
     use deagle_parse::pattern::search_pattern;
 
     let walker = ignore::WalkBuilder::new(root)
-        .hidden(true).git_ignore(true).build();
+        .hidden(true)
+        .git_ignore(true)
+        .build();
 
     for entry in walker.flatten() {
         let path = entry.path();
-        if !path.is_file() { continue; }
+        if !path.is_file() {
+            continue;
+        }
 
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let lang = Language::from_extension(ext);
-        if lang == Language::Unknown { continue; }
+        if lang == Language::Unknown {
+            continue;
+        }
 
         let content = std::fs::read_to_string(path).unwrap_or_default();
-        if content.is_empty() { continue; }
+        if content.is_empty() {
+            continue;
+        }
 
         let rel_path = path.strip_prefix(root).unwrap_or(path);
         if let Ok(matches) = search_pattern(rel_path, &content, pattern, lang) {
             for m in &matches {
-                println!("{}:{}: {}", m.file_path, m.line_start, m.text.lines().next().unwrap_or(""));
+                println!(
+                    "{}:{}: {}",
+                    m.file_path,
+                    m.line_start,
+                    m.text.lines().next().unwrap_or("")
+                );
                 *total += 1;
             }
         }
@@ -600,17 +691,19 @@ fn grep_walk(root: &Path, _dir: &Path, pattern: &str, total: &mut usize) -> Resu
 fn cmd_rg(pattern: &str, path: &Path, lang: Option<&str>) -> Result<(), String> {
     use deagle_parse::text_search::{search_directory, search_file};
 
-    let lang_filter = lang.map(|l| Language::from_extension(match l {
-        "rust" => "rs",
-        "python" => "py",
-        "go" => "go",
-        "typescript" => "ts",
-        "javascript" => "js",
-        "java" => "java",
-        "cpp" | "c++" => "cpp",
-        "c" => "c",
-        other => other,
-    }));
+    let lang_filter = lang.map(|l| {
+        Language::from_extension(match l {
+            "rust" => "rs",
+            "python" => "py",
+            "go" => "go",
+            "typescript" => "ts",
+            "javascript" => "js",
+            "java" => "java",
+            "cpp" | "c++" => "cpp",
+            "c" => "c",
+            other => other,
+        })
+    });
 
     if !path.exists() {
         return Err(format!("Path not found: {}", path.display()));
@@ -619,13 +712,11 @@ fn cmd_rg(pattern: &str, path: &Path, lang: Option<&str>) -> Result<(), String> 
     let matches = if path.is_file() {
         // Single-file search: skip the directory walker so callers can
         // target specific files (matches ripgrep's `rg PAT file` UX).
-        let content = std::fs::read(path)
-            .map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
-        search_file(path, &content, pattern)
-            .map_err(|e| format!("Search failed: {}", e))?
+        let content =
+            std::fs::read(path).map_err(|e| format!("Failed to read {}: {}", path.display(), e))?;
+        search_file(path, &content, pattern).map_err(|e| format!("Search failed: {}", e))?
     } else {
-        search_directory(path, pattern, lang_filter)
-            .map_err(|e| format!("Search failed: {}", e))?
+        search_directory(path, pattern, lang_filter).map_err(|e| format!("Search failed: {}", e))?
     };
 
     if matches.is_empty() {

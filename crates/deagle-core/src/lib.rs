@@ -278,7 +278,7 @@ impl GraphDb {
                 content='nodes',
                 content_rowid='id'
             );
-            "
+            ",
         )?;
         Ok(())
     }
@@ -315,26 +315,36 @@ impl GraphDb {
         {
             let mut node_stmt = tx.prepare_cached(
                 "INSERT INTO nodes (name, kind, language, file_path, line_start, line_end, content)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )?;
             let mut fts_stmt = tx.prepare_cached(
-                "INSERT INTO nodes_fts(rowid, name, content, file_path) VALUES (?1, ?2, ?3, ?4)"
+                "INSERT INTO nodes_fts(rowid, name, content, file_path) VALUES (?1, ?2, ?3, ?4)",
             )?;
 
             for node in nodes {
                 node_stmt.execute(rusqlite::params![
-                    node.name, node.kind.to_string(), node.language.to_string(),
-                    node.file_path, node.line_start, node.line_end, node.content,
+                    node.name,
+                    node.kind.to_string(),
+                    node.language.to_string(),
+                    node.file_path,
+                    node.line_start,
+                    node.line_end,
+                    node.content,
                 ])?;
                 let id = tx.last_insert_rowid();
-                fts_stmt.execute(rusqlite::params![id, node.name, node.content, node.file_path])?;
+                fts_stmt.execute(rusqlite::params![
+                    id,
+                    node.name,
+                    node.content,
+                    node.file_path
+                ])?;
                 ids.push(id);
             }
         }
 
         {
             let mut edge_stmt = tx.prepare_cached(
-                "INSERT INTO edges (from_id, to_id, kind, confidence) VALUES (?1, ?2, ?3, ?4)"
+                "INSERT INTO edges (from_id, to_id, kind, confidence) VALUES (?1, ?2, ?3, ?4)",
             )?;
             for (from_id, to_id, kind) in edges {
                 edge_stmt.execute(rusqlite::params![from_id, to_id, kind.to_string(), 1.0])?;
@@ -369,14 +379,20 @@ impl GraphDb {
                 content: row.get(7)?,
             })
         })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(DeagleError::from)
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(DeagleError::from)
     }
 
     /// Insert an edge.
     pub fn insert_edge(&self, edge: &Edge) -> Result<()> {
         self.conn.execute(
             "INSERT INTO edges (from_id, to_id, kind, confidence) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![edge.from_id, edge.to_id, edge.kind.to_string(), edge.confidence],
+            rusqlite::params![
+                edge.from_id,
+                edge.to_id,
+                edge.kind.to_string(),
+                edge.confidence
+            ],
         )?;
         Ok(())
     }
@@ -385,7 +401,7 @@ impl GraphDb {
     pub fn search_nodes(&self, query: &str) -> Result<Vec<Node>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, kind, language, file_path, line_start, line_end, content
-             FROM nodes WHERE name LIKE ?1 ORDER BY name"
+             FROM nodes WHERE name LIKE ?1 ORDER BY name",
         )?;
         let pattern = format!("%{}%", query);
         let rows = stmt.query_map([&pattern], |row| {
@@ -402,19 +418,20 @@ impl GraphDb {
                 content: row.get(7)?,
             })
         })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(DeagleError::from)
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(DeagleError::from)
     }
 
     /// Fuzzy search nodes by name — ranked by match score (best first).
     pub fn fuzzy_search_nodes(&self, query: &str) -> Result<Vec<Node>> {
-        use fuzzy_matcher::skim::SkimMatcherV2;
         use fuzzy_matcher::FuzzyMatcher;
+        use fuzzy_matcher::skim::SkimMatcherV2;
 
         let matcher = SkimMatcherV2::default();
 
         // Get all nodes and score them
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, kind, language, file_path, line_start, line_end, content FROM nodes"
+            "SELECT id, name, kind, language, file_path, line_start, line_end, content FROM nodes",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(Node {
@@ -436,21 +453,23 @@ impl GraphDb {
         let mut scored: Vec<(i64, Node)> = all_nodes
             .into_iter()
             .filter_map(|node| {
-                matcher.fuzzy_match(&node.name, query).map(|score| (score, node))
+                matcher
+                    .fuzzy_match(&node.name, query)
+                    .map(|score| (score, node))
             })
             .collect();
 
         // Sort by score descending (best matches first)
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
 
         Ok(scored.into_iter().map(|(_, node)| node).collect())
     }
 
     /// Get all edges from a node (outgoing relationships).
     pub fn edges_from(&self, node_id: i64) -> Result<Vec<Edge>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT from_id, to_id, kind, confidence FROM edges WHERE from_id = ?1"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT from_id, to_id, kind, confidence FROM edges WHERE from_id = ?1")?;
         let rows = stmt.query_map([node_id], |row| {
             Ok(Edge {
                 from_id: row.get(0)?,
@@ -460,24 +479,31 @@ impl GraphDb {
                 confidence: row.get(3)?,
             })
         })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(DeagleError::from)
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(DeagleError::from)
     }
 
     /// Get total node count.
     pub fn node_count(&self) -> Result<usize> {
-        let count: i64 = self.conn.query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0))?;
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0))?;
         Ok(count as usize)
     }
 
     /// Get total edge count.
     pub fn edge_count(&self) -> Result<usize> {
-        let count: i64 = self.conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))?;
+        let count: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))?;
         Ok(count as usize)
     }
 
     /// Clear all data (for re-indexing).
     pub fn clear(&self) -> Result<()> {
-        self.conn.execute_batch("DELETE FROM edges; DELETE FROM nodes_fts; DELETE FROM nodes; DELETE FROM file_hashes;")?;
+        self.conn.execute_batch(
+            "DELETE FROM edges; DELETE FROM nodes_fts; DELETE FROM nodes; DELETE FROM file_hashes;",
+        )?;
         Ok(())
     }
 
@@ -488,7 +514,7 @@ impl GraphDb {
 
     /// Compute SHA-256 hash of content (first 16 hex chars).
     pub fn content_hash(content: &str) -> String {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let hash = Sha256::digest(content.as_bytes());
         hash.iter().take(8).map(|b| format!("{:02x}", b)).collect()
     }
@@ -496,11 +522,14 @@ impl GraphDb {
     /// Check if a file needs re-indexing (hash changed or new file).
     pub fn needs_reindex(&self, file_path: &str, content: &str) -> Result<bool> {
         let current_hash = Self::content_hash(content);
-        let stored: Option<String> = self.conn.query_row(
-            "SELECT content_hash FROM file_hashes WHERE file_path = ?1",
-            [file_path],
-            |row| row.get(0),
-        ).ok();
+        let stored: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT content_hash FROM file_hashes WHERE file_path = ?1",
+                [file_path],
+                |row| row.get(0),
+            )
+            .ok();
 
         Ok(stored.as_deref() != Some(&current_hash))
     }
@@ -518,19 +547,25 @@ impl GraphDb {
     /// Remove nodes and edges for a specific file (for re-indexing).
     pub fn remove_file(&self, file_path: &str) -> Result<()> {
         // Get node IDs for this file
-        let mut stmt = self.conn.prepare("SELECT id FROM nodes WHERE file_path = ?1")?;
-        let ids: Vec<i64> = stmt.query_map([file_path], |row| row.get(0))?
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM nodes WHERE file_path = ?1")?;
+        let ids: Vec<i64> = stmt
+            .query_map([file_path], |row| row.get(0))?
             .filter_map(|r| r.ok())
             .collect();
 
         // Delete edges referencing these nodes
         for id in &ids {
-            self.conn.execute("DELETE FROM edges WHERE from_id = ?1 OR to_id = ?1", [id])?;
+            self.conn
+                .execute("DELETE FROM edges WHERE from_id = ?1 OR to_id = ?1", [id])?;
         }
         // Delete nodes
-        self.conn.execute("DELETE FROM nodes WHERE file_path = ?1", [file_path])?;
+        self.conn
+            .execute("DELETE FROM nodes WHERE file_path = ?1", [file_path])?;
         // Delete hash
-        self.conn.execute("DELETE FROM file_hashes WHERE file_path = ?1", [file_path])?;
+        self.conn
+            .execute("DELETE FROM file_hashes WHERE file_path = ?1", [file_path])?;
         Ok(())
     }
 }
@@ -608,21 +643,33 @@ mod tests {
     fn test_insert_edge_and_query() {
         let db = GraphDb::in_memory().unwrap();
         let n1 = Node {
-            id: 0, name: "main".into(), kind: NodeKind::Function,
-            language: Language::Rust, file_path: "src/main.rs".into(),
-            line_start: 1, line_end: 10, content: None,
+            id: 0,
+            name: "main".into(),
+            kind: NodeKind::Function,
+            language: Language::Rust,
+            file_path: "src/main.rs".into(),
+            line_start: 1,
+            line_end: 10,
+            content: None,
         };
         let n2 = Node {
-            id: 0, name: "handler".into(), kind: NodeKind::Function,
-            language: Language::Rust, file_path: "src/lib.rs".into(),
-            line_start: 5, line_end: 20, content: None,
+            id: 0,
+            name: "handler".into(),
+            kind: NodeKind::Function,
+            language: Language::Rust,
+            file_path: "src/lib.rs".into(),
+            line_start: 5,
+            line_end: 20,
+            content: None,
         };
         let id1 = db.insert_node(&n1).unwrap();
         let id2 = db.insert_node(&n2).unwrap();
 
         let edge = Edge {
-            from_id: id1, to_id: id2,
-            kind: EdgeKind::Calls, confidence: 1.0,
+            from_id: id1,
+            to_id: id2,
+            kind: EdgeKind::Calls,
+            confidence: 1.0,
         };
         db.insert_edge(&edge).unwrap();
         assert_eq!(db.edge_count().unwrap(), 1);
@@ -637,9 +684,14 @@ mod tests {
     fn test_search_case_insensitive() {
         let db = GraphDb::in_memory().unwrap();
         let node = Node {
-            id: 0, name: "MyStruct".into(), kind: NodeKind::Struct,
-            language: Language::Rust, file_path: "src/types.rs".into(),
-            line_start: 1, line_end: 5, content: None,
+            id: 0,
+            name: "MyStruct".into(),
+            kind: NodeKind::Struct,
+            language: Language::Rust,
+            file_path: "src/types.rs".into(),
+            line_start: 1,
+            line_end: 5,
+            content: None,
         };
         db.insert_node(&node).unwrap();
 
@@ -651,9 +703,14 @@ mod tests {
     fn test_clear_db() {
         let db = GraphDb::in_memory().unwrap();
         let node = Node {
-            id: 0, name: "test".into(), kind: NodeKind::Function,
-            language: Language::Rust, file_path: "t.rs".into(),
-            line_start: 1, line_end: 1, content: None,
+            id: 0,
+            name: "test".into(),
+            kind: NodeKind::Function,
+            language: Language::Rust,
+            file_path: "t.rs".into(),
+            line_start: 1,
+            line_end: 1,
+            content: None,
         };
         db.insert_node(&node).unwrap();
         assert_eq!(db.node_count().unwrap(), 1);
@@ -664,9 +721,14 @@ mod tests {
     #[test]
     fn test_node_serialization() {
         let node = Node {
-            id: 1, name: "test_fn".into(), kind: NodeKind::Function,
-            language: Language::Python, file_path: "app.py".into(),
-            line_start: 10, line_end: 25, content: Some("def test_fn(): pass".into()),
+            id: 1,
+            name: "test_fn".into(),
+            kind: NodeKind::Function,
+            language: Language::Python,
+            file_path: "app.py".into(),
+            line_start: 10,
+            line_end: 25,
+            content: Some("def test_fn(): pass".into()),
         };
         let json = serde_json::to_string(&node).unwrap();
         let parsed: Node = serde_json::from_str(&json).unwrap();
@@ -687,10 +749,16 @@ mod tests {
         let db = GraphDb::in_memory().unwrap();
         for file in &["a.rs", "b.rs", "c.rs"] {
             db.insert_node(&Node {
-                id: 0, name: "new".into(), kind: NodeKind::Method,
-                language: Language::Rust, file_path: file.to_string(),
-                line_start: 1, line_end: 5, content: None,
-            }).unwrap();
+                id: 0,
+                name: "new".into(),
+                kind: NodeKind::Method,
+                language: Language::Rust,
+                file_path: file.to_string(),
+                line_start: 1,
+                line_end: 5,
+                content: None,
+            })
+            .unwrap();
         }
         let results = db.search_nodes("new").unwrap();
         assert_eq!(results.len(), 3, "Should find all 3 nodes named 'new'");
@@ -700,10 +768,16 @@ mod tests {
     fn test_search_empty_query() {
         let db = GraphDb::in_memory().unwrap();
         db.insert_node(&Node {
-            id: 0, name: "hello".into(), kind: NodeKind::Function,
-            language: Language::Rust, file_path: "t.rs".into(),
-            line_start: 1, line_end: 1, content: None,
-        }).unwrap();
+            id: 0,
+            name: "hello".into(),
+            kind: NodeKind::Function,
+            language: Language::Rust,
+            file_path: "t.rs".into(),
+            line_start: 1,
+            line_end: 1,
+            content: None,
+        })
+        .unwrap();
         // Empty pattern matches everything via LIKE '%%'
         let results = db.search_nodes("").unwrap();
         assert_eq!(results.len(), 1);
@@ -719,19 +793,45 @@ mod tests {
     #[test]
     fn test_multiple_edge_types() {
         let db = GraphDb::in_memory().unwrap();
-        let id1 = db.insert_node(&Node {
-            id: 0, name: "A".into(), kind: NodeKind::Struct,
-            language: Language::Rust, file_path: "a.rs".into(),
-            line_start: 1, line_end: 5, content: None,
-        }).unwrap();
-        let id2 = db.insert_node(&Node {
-            id: 0, name: "B".into(), kind: NodeKind::Trait,
-            language: Language::Rust, file_path: "b.rs".into(),
-            line_start: 1, line_end: 5, content: None,
-        }).unwrap();
+        let id1 = db
+            .insert_node(&Node {
+                id: 0,
+                name: "A".into(),
+                kind: NodeKind::Struct,
+                language: Language::Rust,
+                file_path: "a.rs".into(),
+                line_start: 1,
+                line_end: 5,
+                content: None,
+            })
+            .unwrap();
+        let id2 = db
+            .insert_node(&Node {
+                id: 0,
+                name: "B".into(),
+                kind: NodeKind::Trait,
+                language: Language::Rust,
+                file_path: "b.rs".into(),
+                line_start: 1,
+                line_end: 5,
+                content: None,
+            })
+            .unwrap();
 
-        db.insert_edge(&Edge { from_id: id1, to_id: id2, kind: EdgeKind::Implements, confidence: 1.0 }).unwrap();
-        db.insert_edge(&Edge { from_id: id1, to_id: id2, kind: EdgeKind::References, confidence: 0.8 }).unwrap();
+        db.insert_edge(&Edge {
+            from_id: id1,
+            to_id: id2,
+            kind: EdgeKind::Implements,
+            confidence: 1.0,
+        })
+        .unwrap();
+        db.insert_edge(&Edge {
+            from_id: id1,
+            to_id: id2,
+            kind: EdgeKind::References,
+            confidence: 0.8,
+        })
+        .unwrap();
 
         let edges = db.edges_from(id1).unwrap();
         assert_eq!(edges.len(), 2);
@@ -742,52 +842,97 @@ mod tests {
     #[test]
     fn test_edge_confidence_stored() {
         let db = GraphDb::in_memory().unwrap();
-        let id1 = db.insert_node(&Node {
-            id: 0, name: "x".into(), kind: NodeKind::Function,
-            language: Language::Rust, file_path: "x.rs".into(),
-            line_start: 1, line_end: 1, content: None,
-        }).unwrap();
-        let id2 = db.insert_node(&Node {
-            id: 0, name: "y".into(), kind: NodeKind::Function,
-            language: Language::Rust, file_path: "y.rs".into(),
-            line_start: 1, line_end: 1, content: None,
-        }).unwrap();
+        let id1 = db
+            .insert_node(&Node {
+                id: 0,
+                name: "x".into(),
+                kind: NodeKind::Function,
+                language: Language::Rust,
+                file_path: "x.rs".into(),
+                line_start: 1,
+                line_end: 1,
+                content: None,
+            })
+            .unwrap();
+        let id2 = db
+            .insert_node(&Node {
+                id: 0,
+                name: "y".into(),
+                kind: NodeKind::Function,
+                language: Language::Rust,
+                file_path: "y.rs".into(),
+                line_start: 1,
+                line_end: 1,
+                content: None,
+            })
+            .unwrap();
 
-        db.insert_edge(&Edge { from_id: id1, to_id: id2, kind: EdgeKind::Calls, confidence: 0.75 }).unwrap();
+        db.insert_edge(&Edge {
+            from_id: id1,
+            to_id: id2,
+            kind: EdgeKind::Calls,
+            confidence: 0.75,
+        })
+        .unwrap();
         let edges = db.edges_from(id1).unwrap();
         assert!((edges[0].confidence - 0.75).abs() < 0.01);
     }
 
     #[test]
-    #[test]
     fn test_fuzzy_search_basic() {
         let db = GraphDb::in_memory().unwrap();
-        for name in &["process_request", "handle_response", "parse_input", "validate_data"] {
+        for name in &[
+            "process_request",
+            "handle_response",
+            "parse_input",
+            "validate_data",
+        ] {
             db.insert_node(&Node {
-                id: 0, name: name.to_string(), kind: NodeKind::Function,
-                language: Language::Rust, file_path: "lib.rs".into(),
-                line_start: 1, line_end: 5, content: None,
-            }).unwrap();
+                id: 0,
+                name: name.to_string(),
+                kind: NodeKind::Function,
+                language: Language::Rust,
+                file_path: "lib.rs".into(),
+                line_start: 1,
+                line_end: 5,
+                content: None,
+            })
+            .unwrap();
         }
 
         let results = db.fuzzy_search_nodes("proc").unwrap();
         assert!(!results.is_empty(), "fuzzy search should find matches");
-        assert_eq!(results[0].name, "process_request", "best match should be first");
+        assert_eq!(
+            results[0].name, "process_request",
+            "best match should be first"
+        );
     }
 
     #[test]
     fn test_fuzzy_search_typo_tolerance() {
         let db = GraphDb::in_memory().unwrap();
         db.insert_node(&Node {
-            id: 0, name: "calculate_total".into(), kind: NodeKind::Function,
-            language: Language::Rust, file_path: "math.rs".into(),
-            line_start: 1, line_end: 5, content: None,
-        }).unwrap();
+            id: 0,
+            name: "calculate_total".into(),
+            kind: NodeKind::Function,
+            language: Language::Rust,
+            file_path: "math.rs".into(),
+            line_start: 1,
+            line_end: 5,
+            content: None,
+        })
+        .unwrap();
         db.insert_node(&Node {
-            id: 0, name: "validate_input".into(), kind: NodeKind::Function,
-            language: Language::Rust, file_path: "input.rs".into(),
-            line_start: 1, line_end: 5, content: None,
-        }).unwrap();
+            id: 0,
+            name: "validate_input".into(),
+            kind: NodeKind::Function,
+            language: Language::Rust,
+            file_path: "input.rs".into(),
+            line_start: 1,
+            line_end: 5,
+            content: None,
+        })
+        .unwrap();
 
         // "calctot" should fuzzy-match "calculate_total"
         let results = db.fuzzy_search_nodes("calctot").unwrap();
@@ -799,10 +944,16 @@ mod tests {
     fn test_fuzzy_search_no_match() {
         let db = GraphDb::in_memory().unwrap();
         db.insert_node(&Node {
-            id: 0, name: "hello".into(), kind: NodeKind::Function,
-            language: Language::Rust, file_path: "t.rs".into(),
-            line_start: 1, line_end: 1, content: None,
-        }).unwrap();
+            id: 0,
+            name: "hello".into(),
+            kind: NodeKind::Function,
+            language: Language::Rust,
+            file_path: "t.rs".into(),
+            line_start: 1,
+            line_end: 1,
+            content: None,
+        })
+        .unwrap();
 
         let results = db.fuzzy_search_nodes("zzzzz").unwrap();
         assert!(results.is_empty(), "no fuzzy match for gibberish");
@@ -819,16 +970,27 @@ mod tests {
     fn test_keyword_search() {
         let db = GraphDb::in_memory().unwrap();
         db.insert_node(&Node {
-            id: 0, name: "process_data".into(), kind: NodeKind::Function,
-            language: Language::Rust, file_path: "data.rs".into(),
-            line_start: 1, line_end: 10,
+            id: 0,
+            name: "process_data".into(),
+            kind: NodeKind::Function,
+            language: Language::Rust,
+            file_path: "data.rs".into(),
+            line_start: 1,
+            line_end: 10,
             content: Some("pub fn process_data(input: Vec<String>) -> Result<()>".into()),
-        }).unwrap();
+        })
+        .unwrap();
         db.insert_node(&Node {
-            id: 0, name: "validate".into(), kind: NodeKind::Function,
-            language: Language::Rust, file_path: "val.rs".into(),
-            line_start: 1, line_end: 5, content: Some("fn validate(s: &str) -> bool".into()),
-        }).unwrap();
+            id: 0,
+            name: "validate".into(),
+            kind: NodeKind::Function,
+            language: Language::Rust,
+            file_path: "val.rs".into(),
+            line_start: 1,
+            line_end: 5,
+            content: Some("fn validate(s: &str) -> bool".into()),
+        })
+        .unwrap();
 
         let results = db.keyword_search("process").unwrap();
         assert!(!results.is_empty(), "FTS5 should find 'process'");
@@ -839,11 +1001,18 @@ mod tests {
     fn test_keyword_search_content() {
         let db = GraphDb::in_memory().unwrap();
         db.insert_node(&Node {
-            id: 0, name: "handler".into(), kind: NodeKind::Function,
-            language: Language::Rust, file_path: "web.rs".into(),
-            line_start: 1, line_end: 20,
-            content: Some("async fn handler(req: Request) -> Response { authenticate(req) }".into()),
-        }).unwrap();
+            id: 0,
+            name: "handler".into(),
+            kind: NodeKind::Function,
+            language: Language::Rust,
+            file_path: "web.rs".into(),
+            line_start: 1,
+            line_end: 20,
+            content: Some(
+                "async fn handler(req: Request) -> Response { authenticate(req) }".into(),
+            ),
+        })
+        .unwrap();
 
         // Search by content, not name
         let results = db.keyword_search("authenticate").unwrap();
@@ -854,10 +1023,16 @@ mod tests {
     fn test_keyword_search_empty() {
         let db = GraphDb::in_memory().unwrap();
         db.insert_node(&Node {
-            id: 0, name: "hello".into(), kind: NodeKind::Function,
-            language: Language::Rust, file_path: "h.rs".into(),
-            line_start: 1, line_end: 1, content: None,
-        }).unwrap();
+            id: 0,
+            name: "hello".into(),
+            kind: NodeKind::Function,
+            language: Language::Rust,
+            file_path: "h.rs".into(),
+            line_start: 1,
+            line_end: 1,
+            content: None,
+        })
+        .unwrap();
 
         let results = db.keyword_search("nonexistent_xyz").unwrap();
         assert!(results.is_empty());
@@ -867,18 +1042,33 @@ mod tests {
     fn test_incremental_hash() {
         let db = GraphDb::in_memory().unwrap();
         let content = "fn main() {}";
-        assert!(db.needs_reindex("test.rs", content).unwrap(), "new file needs indexing");
+        assert!(
+            db.needs_reindex("test.rs", content).unwrap(),
+            "new file needs indexing"
+        );
         db.store_file_hash("test.rs", content).unwrap();
-        assert!(!db.needs_reindex("test.rs", content).unwrap(), "same content skipped");
-        assert!(db.needs_reindex("test.rs", "fn main() { println!() }").unwrap(), "changed content needs re-index");
+        assert!(
+            !db.needs_reindex("test.rs", content).unwrap(),
+            "same content skipped"
+        );
+        assert!(
+            db.needs_reindex("test.rs", "fn main() { println!() }")
+                .unwrap(),
+            "changed content needs re-index"
+        );
     }
 
     #[test]
     fn test_node_with_none_content() {
         let node = Node {
-            id: 0, name: "no_content".into(), kind: NodeKind::Function,
-            language: Language::Go, file_path: "main.go".into(),
-            line_start: 1, line_end: 10, content: None,
+            id: 0,
+            name: "no_content".into(),
+            kind: NodeKind::Function,
+            language: Language::Go,
+            file_path: "main.go".into(),
+            line_start: 1,
+            line_end: 10,
+            content: None,
         };
         let json = serde_json::to_string(&node).unwrap();
         let parsed: Node = serde_json::from_str(&json).unwrap();

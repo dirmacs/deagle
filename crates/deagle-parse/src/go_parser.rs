@@ -14,22 +14,30 @@ pub fn parse(path: &Path, content: &str) -> Result<Vec<Node>> {
 pub fn parse_with_edges(path: &Path, content: &str) -> Result<ParseResult> {
     let mut parser = tree_sitter::Parser::new();
     let language = tree_sitter_go::LANGUAGE;
-    parser.set_language(&language.into()).map_err(|e| DeagleError::Parse {
-        file: path.display().to_string(),
-        message: format!("Failed to set language: {}", e),
-    })?;
+    parser
+        .set_language(&language.into())
+        .map_err(|e| DeagleError::Parse {
+            file: path.display().to_string(),
+            message: format!("Failed to set language: {}", e),
+        })?;
 
-    let tree = parser.parse(content, None).ok_or_else(|| DeagleError::Parse {
-        file: path.display().to_string(),
-        message: "Failed to parse file".into(),
-    })?;
+    let tree = parser
+        .parse(content, None)
+        .ok_or_else(|| DeagleError::Parse {
+            file: path.display().to_string(),
+            message: "Failed to parse file".into(),
+        })?;
 
     let mut nodes = Vec::new();
     let file_path = path.to_string_lossy().to_string();
 
     nodes.push(Node {
         id: 0,
-        name: path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string(),
+        name: path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string(),
         kind: NodeKind::File,
         language: Language::Go,
         file_path: file_path.clone(),
@@ -77,25 +85,26 @@ fn extract_definitions(
         _ => None,
     };
 
-    if let Some(kind) = kind {
-        if let Some(name) = extract_name(node, source, kind) {
-            let start = node.start_position();
-            let end = node.end_position();
-            let content = node.utf8_text(source.as_bytes()).ok().map(|s| {
-                crate::truncate_content(s, 500)
-            });
+    if let Some(kind) = kind
+        && let Some(name) = extract_name(node, source, kind)
+    {
+        let start = node.start_position();
+        let end = node.end_position();
+        let content = node
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(|s| crate::truncate_content(s, 500));
 
-            results.push(Node {
-                id: 0,
-                name,
-                kind,
-                language: Language::Go,
-                file_path: file_path.to_string(),
-                line_start: (start.row + 1) as u32,
-                line_end: (end.row + 1) as u32,
-                content,
-            });
-        }
+        results.push(Node {
+            id: 0,
+            name,
+            kind,
+            language: Language::Go,
+            file_path: file_path.to_string(),
+            line_start: (start.row + 1) as u32,
+            line_end: (end.row + 1) as u32,
+            content,
+        });
     }
 
     // Recurse into children
@@ -107,11 +116,10 @@ fn extract_definitions(
 
 fn extract_name(node: tree_sitter::Node, source: &str, kind: NodeKind) -> Option<String> {
     match kind {
-        NodeKind::Import => {
-            node.utf8_text(source.as_bytes())
-                .ok()
-                .map(|s| s.trim().to_string())
-        }
+        NodeKind::Import => node
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(|s| s.trim().to_string()),
         NodeKind::Module => {
             // package clause: "package main"
             if let Some(n) = node.child_by_field_name("name") {
@@ -120,16 +128,16 @@ fn extract_name(node: tree_sitter::Node, source: &str, kind: NodeKind) -> Option
             // Fallback: find package_identifier child
             let mut c = node.walk();
             let children: Vec<_> = node.children(&mut c).collect();
-            children.iter()
+            children
+                .iter()
                 .find(|n| n.kind() == "package_identifier")
                 .and_then(|n| n.utf8_text(source.as_bytes()).ok())
                 .map(|s| s.to_string())
         }
-        _ => {
-            node.child_by_field_name("name")
-                .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                .map(|s| s.to_string())
-        }
+        _ => node
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .map(|s| s.to_string()),
     }
 }
 
@@ -180,7 +188,10 @@ func main() {
         assert!(kinds.contains(&NodeKind::Import), "should find import");
         assert!(kinds.contains(&NodeKind::Constant), "should find const");
         assert!(kinds.contains(&NodeKind::Struct), "should find struct");
-        assert!(kinds.contains(&NodeKind::Interface), "should find interface");
+        assert!(
+            kinds.contains(&NodeKind::Interface),
+            "should find interface"
+        );
         assert!(kinds.contains(&NodeKind::Function), "should find function");
         assert!(kinds.contains(&NodeKind::Method), "should find method");
     }
@@ -189,7 +200,10 @@ func main() {
     fn test_parse_go_struct_name() {
         let path = PathBuf::from("main.go");
         let nodes = parse(&path, SAMPLE_GO).unwrap();
-        let structs: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Struct).collect();
+        let structs: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Struct)
+            .collect();
         assert_eq!(structs.len(), 1);
         assert_eq!(structs[0].name, "Config");
         assert_eq!(structs[0].language, Language::Go);
@@ -199,15 +213,24 @@ func main() {
     fn test_parse_go_methods() {
         let path = PathBuf::from("main.go");
         let nodes = parse(&path, SAMPLE_GO).unwrap();
-        let methods: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
-        assert!(methods.iter().any(|m| m.name == "Get"), "should find Get method");
+        let methods: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Method)
+            .collect();
+        assert!(
+            methods.iter().any(|m| m.name == "Get"),
+            "should find Get method"
+        );
     }
 
     #[test]
     fn test_parse_go_functions() {
         let path = PathBuf::from("main.go");
         let nodes = parse(&path, SAMPLE_GO).unwrap();
-        let fns: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+        let fns: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Function)
+            .collect();
         assert!(fns.iter().any(|f| f.name == "NewConfig"));
         assert!(fns.iter().any(|f| f.name == "main"));
     }
@@ -216,7 +239,10 @@ func main() {
     fn test_parse_go_interface() {
         let path = PathBuf::from("main.go");
         let nodes = parse(&path, SAMPLE_GO).unwrap();
-        let ifaces: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Interface).collect();
+        let ifaces: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Interface)
+            .collect();
         assert_eq!(ifaces.len(), 1);
         assert_eq!(ifaces[0].name, "Handler");
     }

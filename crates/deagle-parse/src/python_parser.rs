@@ -14,15 +14,19 @@ pub fn parse(path: &Path, content: &str) -> Result<Vec<Node>> {
 pub fn parse_with_edges(path: &Path, content: &str) -> Result<ParseResult> {
     let mut parser = tree_sitter::Parser::new();
     let language = tree_sitter_python::LANGUAGE;
-    parser.set_language(&language.into()).map_err(|e| DeagleError::Parse {
-        file: path.display().to_string(),
-        message: format!("Failed to set language: {}", e),
-    })?;
+    parser
+        .set_language(&language.into())
+        .map_err(|e| DeagleError::Parse {
+            file: path.display().to_string(),
+            message: format!("Failed to set language: {}", e),
+        })?;
 
-    let tree = parser.parse(content, None).ok_or_else(|| DeagleError::Parse {
-        file: path.display().to_string(),
-        message: "Failed to parse file".into(),
-    })?;
+    let tree = parser
+        .parse(content, None)
+        .ok_or_else(|| DeagleError::Parse {
+            file: path.display().to_string(),
+            message: "Failed to parse file".into(),
+        })?;
 
     let mut nodes = Vec::new();
     let file_path = path.to_string_lossy().to_string();
@@ -30,7 +34,11 @@ pub fn parse_with_edges(path: &Path, content: &str) -> Result<ParseResult> {
     // Insert file node as index 0
     nodes.push(Node {
         id: 0,
-        name: path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string(),
+        name: path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string(),
         kind: NodeKind::File,
         language: Language::Python,
         file_path: file_path.clone(),
@@ -70,30 +78,33 @@ fn extract_definitions(
         "global_statement" => None, // skip
         "expression_statement" => {
             // Check for top-level assignments (module-level constants)
-            if !inside_class {
-                if let Some(child) = node.child(0) {
-                    if child.kind() == "assignment" {
-                        // Only capture UPPER_CASE assignments as constants
-                        if let Some(name) = extract_assignment_name(child, source) {
-                            if name.chars().all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit()) && !name.is_empty() {
-                                let start = node.start_position();
-                                let end = node.end_position();
-                                let content = node.utf8_text(source.as_bytes()).ok().map(|s| {
-                                    crate::truncate_content(s, 500)
-                                });
-                                results.push(Node {
-                                    id: 0,
-                                    name,
-                                    kind: NodeKind::Constant,
-                                    language: Language::Python,
-                                    file_path: file_path.to_string(),
-                                    line_start: (start.row + 1) as u32,
-                                    line_end: (end.row + 1) as u32,
-                                    content,
-                                });
-                            }
-                        }
-                    }
+            if !inside_class
+                && let Some(child) = node.child(0)
+                && child.kind() == "assignment"
+            {
+                // Only capture UPPER_CASE assignments as constants
+                if let Some(name) = extract_assignment_name(child, source)
+                    && name
+                        .chars()
+                        .all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit())
+                    && !name.is_empty()
+                {
+                    let start = node.start_position();
+                    let end = node.end_position();
+                    let content = node
+                        .utf8_text(source.as_bytes())
+                        .ok()
+                        .map(|s| crate::truncate_content(s, 500));
+                    results.push(Node {
+                        id: 0,
+                        name,
+                        kind: NodeKind::Constant,
+                        language: Language::Python,
+                        file_path: file_path.to_string(),
+                        line_start: (start.row + 1) as u32,
+                        line_end: (end.row + 1) as u32,
+                        content,
+                    });
                 }
             }
             None
@@ -105,9 +116,10 @@ fn extract_definitions(
         if let Some(name) = extract_name(node, source, kind) {
             let start = node.start_position();
             let end = node.end_position();
-            let content = node.utf8_text(source.as_bytes()).ok().map(|s| {
-                crate::truncate_content(s, 500)
-            });
+            let content = node
+                .utf8_text(source.as_bytes())
+                .ok()
+                .map(|s| crate::truncate_content(s, 500));
 
             results.push(Node {
                 id: 0,
@@ -161,14 +173,13 @@ fn extract_name(node: tree_sitter::Node, source: &str, kind: NodeKind) -> Option
 
 fn extract_assignment_name(node: tree_sitter::Node, source: &str) -> Option<String> {
     // Assignment left side — could be identifier or pattern
-    node.child_by_field_name("left")
-        .and_then(|n| {
-            if n.kind() == "identifier" {
-                n.utf8_text(source.as_bytes()).ok().map(|s| s.to_string())
-            } else {
-                None
-            }
-        })
+    node.child_by_field_name("left").and_then(|n| {
+        if n.kind() == "identifier" {
+            n.utf8_text(source.as_bytes()).ok().map(|s| s.to_string())
+        } else {
+            None
+        }
+    })
 }
 
 #[cfg(test)]
@@ -229,8 +240,15 @@ def main():
         let path = PathBuf::from("test.py");
         let nodes = parse(&path, SAMPLE_PYTHON).unwrap();
 
-        let methods: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
-        assert!(methods.len() >= 3, "should find methods (__init__, get, default), got {}", methods.len());
+        let methods: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Method)
+            .collect();
+        assert!(
+            methods.len() >= 3,
+            "should find methods (__init__, get, default), got {}",
+            methods.len()
+        );
         assert!(methods.iter().any(|m| m.name == "__init__"));
         assert!(methods.iter().any(|m| m.name == "get"));
         assert!(methods.iter().any(|m| m.name == "default"));
@@ -253,9 +271,18 @@ def main():
         let path = PathBuf::from("test.py");
         let nodes = parse(&path, SAMPLE_PYTHON).unwrap();
 
-        let constants: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Constant).collect();
-        assert!(constants.iter().any(|c| c.name == "MAX_SIZE"), "should find MAX_SIZE");
-        assert!(constants.iter().any(|c| c.name == "DEBUG"), "should find DEBUG");
+        let constants: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Constant)
+            .collect();
+        assert!(
+            constants.iter().any(|c| c.name == "MAX_SIZE"),
+            "should find MAX_SIZE"
+        );
+        assert!(
+            constants.iter().any(|c| c.name == "DEBUG"),
+            "should find DEBUG"
+        );
     }
 
     #[test]
@@ -263,9 +290,14 @@ def main():
         let path = PathBuf::from("test.py");
         let nodes = parse(&path, SAMPLE_PYTHON).unwrap();
 
-        let main_fn = nodes.iter().find(|n| n.name == "main" && n.kind == NodeKind::Function);
+        let main_fn = nodes
+            .iter()
+            .find(|n| n.name == "main" && n.kind == NodeKind::Function);
         assert!(main_fn.is_some(), "should find main function");
-        assert!(main_fn.unwrap().line_start > 0, "line numbers should be 1-indexed");
+        assert!(
+            main_fn.unwrap().line_start > 0,
+            "line numbers should be 1-indexed"
+        );
     }
 
     #[test]
@@ -273,7 +305,10 @@ def main():
         let path = PathBuf::from("test.py");
         let nodes = parse(&path, SAMPLE_PYTHON).unwrap();
 
-        let imports: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Import).collect();
+        let imports: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Import)
+            .collect();
         assert_eq!(imports.len(), 2, "should find 2 import statements");
         assert!(imports.iter().any(|i| i.name.contains("os")));
         assert!(imports.iter().any(|i| i.name.contains("pathlib")));
@@ -323,11 +358,17 @@ class MyClass:
         let path = PathBuf::from("deco.py");
         let nodes = parse(&path, source).unwrap();
 
-        let fns: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+        let fns: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Function)
+            .collect();
         assert!(fns.iter().any(|f| f.name == "decorator"));
         assert!(fns.iter().any(|f| f.name == "decorated"));
 
-        let methods: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+        let methods: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Method)
+            .collect();
         assert!(methods.iter().any(|m| m.name == "static_method"));
         assert!(methods.iter().any(|m| m.name == "class_method"));
     }
@@ -365,11 +406,23 @@ class Client:
         let path = PathBuf::from("async.py");
         let nodes = parse(&path, source).unwrap();
 
-        let fns: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
-        assert!(fns.iter().any(|f| f.name == "fetch_data"), "should find async function");
+        let fns: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Function)
+            .collect();
+        assert!(
+            fns.iter().any(|f| f.name == "fetch_data"),
+            "should find async function"
+        );
 
-        let methods: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
-        assert!(methods.iter().any(|m| m.name == "connect"), "should find async method");
+        let methods: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Method)
+            .collect();
+        assert!(
+            methods.iter().any(|m| m.name == "connect"),
+            "should find async method"
+        );
     }
 
     #[test]
@@ -382,7 +435,10 @@ _private = True
         let path = PathBuf::from("vars.py");
         let nodes = parse(&path, source).unwrap();
 
-        let constants: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Constant).collect();
+        let constants: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Constant)
+            .collect();
         assert!(constants.iter().any(|c| c.name == "MAX_SIZE"));
         // lowercase should NOT be captured as constant
         assert!(!constants.iter().any(|c| c.name == "lowercase_var"));
@@ -401,7 +457,10 @@ from collections import defaultdict
         let path = PathBuf::from("imports.py");
         let nodes = parse(&path, source).unwrap();
 
-        let imports: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Import).collect();
+        let imports: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Import)
+            .collect();
         assert_eq!(imports.len(), 5, "should find all 5 import statements");
     }
 }

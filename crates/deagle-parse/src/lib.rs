@@ -7,14 +7,14 @@
 //!
 //! - `pattern` — structural pattern matching via [ast-grep-core](https://crates.io/crates/ast-grep-core)
 
-pub mod rust_parser;
-pub mod python_parser;
-pub mod go_parser;
-pub mod typescript_parser;
-pub mod java_parser;
 pub mod c_parser;
 pub mod cpp_parser;
+pub mod go_parser;
+pub mod java_parser;
+pub mod python_parser;
 pub mod ruby_parser;
+pub mod rust_parser;
+pub mod typescript_parser;
 
 #[cfg(feature = "pattern")]
 pub mod pattern;
@@ -56,18 +56,34 @@ pub fn parse_file(path: &Path, content: &str, language: Language) -> Result<Vec<
 }
 
 /// Parse with edge extraction — returns nodes and relationship tuples.
-pub fn parse_file_with_edges(path: &Path, content: &str, language: Language) -> Result<ParseResult> {
+pub fn parse_file_with_edges(
+    path: &Path,
+    content: &str,
+    language: Language,
+) -> Result<ParseResult> {
     match language {
         Language::Rust => rust_parser::parse_with_edges(path, content),
         Language::Python => python_parser::parse_with_edges(path, content),
         Language::Go => go_parser::parse_with_edges(path, content),
-        Language::TypeScript | Language::JavaScript => typescript_parser::parse_with_edges(path, content),
+        Language::TypeScript | Language::JavaScript => {
+            typescript_parser::parse_with_edges(path, content)
+        }
         Language::Java => java_parser::parse_with_edges(path, content),
         Language::C => c_parser::parse_with_edges(path, content),
         Language::Cpp => cpp_parser::parse_with_edges(path, content),
         Language::Ruby => ruby_parser::parse_with_edges(path, content),
-        _ => Ok(ParseResult { nodes: Vec::new(), edges: Vec::new() }),
+        _ => Ok(ParseResult {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+        }),
     }
+}
+
+/// Detect language from file path and parse.
+pub fn parse_auto(path: &Path, content: &str) -> Result<Vec<Node>> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let lang = Language::from_extension(ext);
+    parse_file(path, content, lang)
 }
 
 #[cfg(test)]
@@ -121,7 +137,7 @@ mod tests {
     #[test]
     fn test_truncate_all_multibyte() {
         // All 2-byte chars: "é" = 2 bytes
-        let s: String = std::iter::repeat('é').take(300).collect(); // 600 bytes
+        let s: String = std::iter::repeat_n('é', 300).collect(); // 600 bytes
         let result = truncate_content(&s, 500);
         assert!(result.ends_with("..."));
         // 500 bytes / 2 bytes per char = 250 chars, perfectly aligned
@@ -137,11 +153,4 @@ mod tests {
     fn test_truncate_zero_max() {
         assert_eq!(truncate_content("hello", 0), "...");
     }
-}
-
-/// Detect language from file path and parse.
-pub fn parse_auto(path: &Path, content: &str) -> Result<Vec<Node>> {
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let lang = Language::from_extension(ext);
-    parse_file(path, content, lang)
 }

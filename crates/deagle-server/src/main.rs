@@ -9,11 +9,11 @@
 //! - GET  /health — health check
 
 use axum::{
+    Router,
     extract::{Query, State},
     http::StatusCode,
     response::Json,
     routing::{get, post},
-    Router,
 };
 use deagle_core::GraphDb;
 use serde::{Deserialize, Serialize};
@@ -33,19 +33,21 @@ async fn main() {
         .with_env_filter("deagle_server=info")
         .init();
 
-    let db_path = std::env::var("DEAGLE_DB")
-        .unwrap_or_else(|_| ".deagle/graph.db".to_string());
-    let root_dir = std::env::var("DEAGLE_ROOT")
-        .unwrap_or_else(|_| ".".to_string());
+    let db_path = std::env::var("DEAGLE_DB").unwrap_or_else(|_| ".deagle/graph.db".to_string());
+    let root_dir = std::env::var("DEAGLE_ROOT").unwrap_or_else(|_| ".".to_string());
     let port: u16 = std::env::var("DEAGLE_PORT")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(3500);
 
-    std::fs::create_dir_all(std::path::Path::new(&db_path).parent().unwrap_or(std::path::Path::new("."))).ok();
+    std::fs::create_dir_all(
+        std::path::Path::new(&db_path)
+            .parent()
+            .unwrap_or(std::path::Path::new(".")),
+    )
+    .ok();
 
-    let db = GraphDb::open(std::path::Path::new(&db_path))
-        .expect("Failed to open graph database");
+    let db = GraphDb::open(std::path::Path::new(&db_path)).expect("Failed to open graph database");
 
     let state = Arc::new(AppState {
         db: Mutex::new(db),
@@ -98,12 +100,18 @@ async fn search(
     Query(params): Query<SearchQuery>,
 ) -> Result<Json<SearchResponse>, (StatusCode, String)> {
     let db = state.db.lock().await;
-    let results = db.search_nodes(&params.q)
+    let results = db
+        .search_nodes(&params.q)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let filtered: Vec<NodeJson> = results
         .into_iter()
-        .filter(|n| params.kind.as_ref().is_none_or(|k| n.kind.to_string() == *k))
+        .filter(|n| {
+            params
+                .kind
+                .as_ref()
+                .is_none_or(|k| n.kind.to_string() == *k)
+        })
         .map(|n| NodeJson {
             name: n.name,
             kind: n.kind.to_string(),
@@ -114,7 +122,10 @@ async fn search(
         .collect();
 
     let count = filtered.len();
-    Ok(Json(SearchResponse { results: filtered, count }))
+    Ok(Json(SearchResponse {
+        results: filtered,
+        count,
+    }))
 }
 
 #[derive(Serialize, Deserialize)]
@@ -127,8 +138,12 @@ async fn stats(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<StatsResponse>, (StatusCode, String)> {
     let db = state.db.lock().await;
-    let nodes = db.node_count().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let edges = db.edge_count().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let nodes = db
+        .node_count()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let edges = db
+        .edge_count()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(StatsResponse { nodes, edges }))
 }
 
@@ -147,31 +162,45 @@ async fn map(
     State(state): State<Arc<AppState>>,
     Json(req): Json<MapRequest>,
 ) -> Result<Json<MapResponse>, (StatusCode, String)> {
-    let dir = req.dir.map(PathBuf::from).unwrap_or_else(|| state.root_dir.clone());
+    let dir = req
+        .dir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state.root_dir.clone());
 
     let db = state.db.lock().await;
-    db.clear().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    db.clear()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let mut files = 0usize;
     let mut entities = 0usize;
 
     let walker = ignore::WalkBuilder::new(&dir)
-        .hidden(true).git_ignore(true).build();
+        .hidden(true)
+        .git_ignore(true)
+        .build();
 
     for entry in walker.flatten() {
         let path = entry.path();
-        if !path.is_file() { continue; }
+        if !path.is_file() {
+            continue;
+        }
 
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let lang = deagle_core::Language::from_extension(ext);
-        if lang == deagle_core::Language::Unknown { continue; }
+        if lang == deagle_core::Language::Unknown {
+            continue;
+        }
 
         let content = std::fs::read_to_string(path).unwrap_or_default();
-        if content.is_empty() { continue; }
+        if content.is_empty() {
+            continue;
+        }
 
         let rel = path.strip_prefix(&dir).unwrap_or(path);
         if let Ok(nodes) = deagle_parse::parse_file(rel, &content, lang) {
-            for n in &nodes { let _ = db.insert_node(n); }
+            for n in &nodes {
+                let _ = db.insert_node(n);
+            }
             entities += nodes.len();
             files += 1;
         }
@@ -203,22 +232,33 @@ async fn sg(
     State(state): State<Arc<AppState>>,
     Json(req): Json<PatternRequest>,
 ) -> Result<Json<PatternResponse>, (StatusCode, String)> {
-    let dir = req.dir.map(PathBuf::from).unwrap_or_else(|| state.root_dir.clone());
+    let dir = req
+        .dir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state.root_dir.clone());
     let mut matches = Vec::new();
 
     let walker = ignore::WalkBuilder::new(&dir)
-        .hidden(true).git_ignore(true).build();
+        .hidden(true)
+        .git_ignore(true)
+        .build();
 
     for entry in walker.flatten() {
         let path = entry.path();
-        if !path.is_file() { continue; }
+        if !path.is_file() {
+            continue;
+        }
 
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let lang = deagle_core::Language::from_extension(ext);
-        if lang == deagle_core::Language::Unknown { continue; }
+        if lang == deagle_core::Language::Unknown {
+            continue;
+        }
 
         let content = std::fs::read_to_string(path).unwrap_or_default();
-        if content.is_empty() { continue; }
+        if content.is_empty() {
+            continue;
+        }
 
         let rel = path.strip_prefix(&dir).unwrap_or(path);
         if let Ok(ms) = deagle_parse::pattern::search_pattern(rel, &content, &req.pattern, lang) {
@@ -240,7 +280,10 @@ async fn rg(
     State(state): State<Arc<AppState>>,
     Json(req): Json<PatternRequest>,
 ) -> Result<Json<PatternResponse>, (StatusCode, String)> {
-    let dir = req.dir.map(PathBuf::from).unwrap_or_else(|| state.root_dir.clone());
+    let dir = req
+        .dir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state.root_dir.clone());
 
     let results = deagle_parse::text_search::search_directory(&dir, &req.pattern, None)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
@@ -281,14 +324,20 @@ mod tests {
     #[tokio::test]
     async fn test_health() {
         let app = test_app();
-        let resp = app.oneshot(Request::get("/health").body(Body::empty()).unwrap()).await.unwrap();
+        let resp = app
+            .oneshot(Request::get("/health").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
     #[tokio::test]
     async fn test_stats_empty() {
         let app = test_app();
-        let resp = app.oneshot(Request::get("/api/stats").body(Body::empty()).unwrap()).await.unwrap();
+        let resp = app
+            .oneshot(Request::get("/api/stats").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
         let stats: StatsResponse = serde_json::from_slice(&body).unwrap();
@@ -299,9 +348,14 @@ mod tests {
     #[tokio::test]
     async fn test_search_empty_db() {
         let app = test_app();
-        let resp = app.oneshot(
-            Request::get("/api/search?q=test").body(Body::empty()).unwrap()
-        ).await.unwrap();
+        let resp = app
+            .oneshot(
+                Request::get("/api/search?q=test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
         let sr: SearchResponse = serde_json::from_slice(&body).unwrap();
@@ -312,10 +366,16 @@ mod tests {
     async fn test_search_with_data() {
         let db = GraphDb::in_memory().unwrap();
         db.insert_node(&deagle_core::Node {
-            id: 0, name: "hello".into(), kind: deagle_core::NodeKind::Function,
-            language: deagle_core::Language::Rust, file_path: "lib.rs".into(),
-            line_start: 1, line_end: 5, content: None,
-        }).unwrap();
+            id: 0,
+            name: "hello".into(),
+            kind: deagle_core::NodeKind::Function,
+            language: deagle_core::Language::Rust,
+            file_path: "lib.rs".into(),
+            line_start: 1,
+            line_end: 5,
+            content: None,
+        })
+        .unwrap();
 
         let state = Arc::new(AppState {
             db: Mutex::new(db),
@@ -325,9 +385,14 @@ mod tests {
             .route("/api/search", get(search))
             .with_state(state);
 
-        let resp = app.oneshot(
-            Request::get("/api/search?q=hello").body(Body::empty()).unwrap()
-        ).await.unwrap();
+        let resp = app
+            .oneshot(
+                Request::get("/api/search?q=hello")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
         let sr: SearchResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(sr.count, 1);

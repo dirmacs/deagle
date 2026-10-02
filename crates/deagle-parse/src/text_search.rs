@@ -7,8 +7,8 @@
 
 use deagle_core::{Language, Result};
 use grep_regex::RegexMatcher;
-use grep_searcher::sinks::UTF8;
 use grep_searcher::Searcher;
+use grep_searcher::sinks::UTF8;
 use std::path::Path;
 
 /// A text search match with location info.
@@ -70,15 +70,18 @@ fn walk_search(
     lang_filter: Option<Language>,
     results: &mut Vec<TextMatch>,
 ) -> Result<()> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(deagle_core::DeagleError::Io)?;
+    let entries = std::fs::read_dir(dir).map_err(deagle_core::DeagleError::Io)?;
 
     for entry in entries.flatten() {
         let path = entry.path();
 
         if path.is_dir() {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name.starts_with('.') || name == "target" || name == "node_modules" || name == "vendor" {
+            if name.starts_with('.')
+                || name == "target"
+                || name == "node_modules"
+                || name == "vendor"
+            {
                 continue;
             }
             walk_search(root, &path, matcher, lang_filter, results)?;

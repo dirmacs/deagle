@@ -7,16 +7,16 @@
 
 use deagle_core::{GraphDb, Language};
 use rmcp::{
-    handler::server::{tool::ToolRouter, wrapper::Json as McpJson, wrapper::Parameters},
+    ServerHandler, ServiceExt,
+    handler::server::{wrapper::Json as McpJson, wrapper::Parameters},
     model::{Implementation, ServerCapabilities},
-    schemars, tool, tool_handler, tool_router, ServerHandler, ServiceExt,
+    schemars, tool, tool_handler, tool_router,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 struct DeagleMcp {
-    tool_router: ToolRouter<Self>,
     db: Mutex<GraphDb>,
     root_dir: PathBuf,
 }
@@ -44,6 +44,14 @@ struct PatternParams {
     /// Directory to search (defaults to root_dir)
     dir: Option<String>,
 }
+
+/// `deagle_stats` takes no arguments.
+///
+/// A dedicated empty struct rather than `serde_json::Value`: MCP requires every
+/// tool's `inputSchema` to have a root `type: "object"`, and the schema schemars
+/// derives for `serde_json::Value` is `{}`, which rmcp rejects at registration.
+#[derive(Deserialize, schemars::JsonSchema)]
+struct StatsParams {}
 
 // --- Response types ---
 
@@ -93,7 +101,6 @@ struct GrepOutput {
 impl DeagleMcp {
     fn new(db: GraphDb, root_dir: PathBuf) -> Self {
         Self {
-            tool_router: Self::tool_router(),
             db: Mutex::new(db),
             root_dir,
         }
@@ -118,7 +125,12 @@ impl DeagleMcp {
 
         let filtered: Vec<SearchResult> = results
             .into_iter()
-            .filter(|n| params.kind.as_ref().is_none_or(|k| n.kind.to_string() == *k))
+            .filter(|n| {
+                params
+                    .kind
+                    .as_ref()
+                    .is_none_or(|k| n.kind.to_string() == *k)
+            })
             .map(|n| SearchResult {
                 name: n.name,
                 kind: n.kind.to_string(),
@@ -145,13 +157,21 @@ impl DeagleMcp {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("Keyword search error: {}", e);
-                return McpJson(SearchOutput { results: vec![], count: 0 });
+                return McpJson(SearchOutput {
+                    results: vec![],
+                    count: 0,
+                });
             }
         };
 
         let filtered: Vec<SearchResult> = results
             .into_iter()
-            .filter(|n| params.kind.as_ref().is_none_or(|k| n.kind.to_string() == *k))
+            .filter(|n| {
+                params
+                    .kind
+                    .as_ref()
+                    .is_none_or(|k| n.kind.to_string() == *k)
+            })
             .map(|n| SearchResult {
                 name: n.name,
                 kind: n.kind.to_string(),
@@ -162,14 +182,17 @@ impl DeagleMcp {
             .collect();
 
         let count = filtered.len();
-        McpJson(SearchOutput { results: filtered, count })
+        McpJson(SearchOutput {
+            results: filtered,
+            count,
+        })
     }
 
     #[tool(
         name = "deagle_stats",
         description = "Show graph database statistics — total nodes (code entities) and edges (relationships) in the index."
     )]
-    fn stats(&self, Parameters(_): Parameters<serde_json::Value>) -> McpJson<StatsOutput> {
+    fn stats(&self, Parameters(_): Parameters<StatsParams>) -> McpJson<StatsOutput> {
         let db = self.db.lock().unwrap();
         let nodes = db.node_count().unwrap_or(0);
         let edges = db.edge_count().unwrap_or(0);
@@ -361,8 +384,7 @@ async fn main() {
     eprintln!("deagle-mcp v{} starting...", env!("CARGO_PKG_VERSION"));
 
     let db_path = std::env::var("DEAGLE_DB").unwrap_or_else(|_| ".deagle/graph.db".to_string());
-    let root_dir =
-        std::env::var("DEAGLE_ROOT").unwrap_or_else(|_| ".".to_string());
+    let root_dir = std::env::var("DEAGLE_ROOT").unwrap_or_else(|_| ".".to_string());
 
     let db_dir = Path::new(&db_path).parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(db_dir).ok();

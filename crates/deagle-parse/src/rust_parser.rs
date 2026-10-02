@@ -18,17 +18,19 @@ pub fn parse(path: &Path, content: &str) -> Result<Vec<Node>> {
 pub fn parse_with_edges(path: &Path, content: &str) -> Result<ParseResult> {
     let mut parser = tree_sitter::Parser::new();
     let language = tree_sitter_rust::LANGUAGE;
-    parser.set_language(&language.into()).map_err(|e| {
-        DeagleError::Parse {
+    parser
+        .set_language(&language.into())
+        .map_err(|e| DeagleError::Parse {
             file: path.display().to_string(),
             message: format!("Failed to set language: {}", e),
-        }
-    })?;
+        })?;
 
-    let tree = parser.parse(content, None).ok_or_else(|| DeagleError::Parse {
-        file: path.display().to_string(),
-        message: "Failed to parse file".into(),
-    })?;
+    let tree = parser
+        .parse(content, None)
+        .ok_or_else(|| DeagleError::Parse {
+            file: path.display().to_string(),
+            message: "Failed to parse file".into(),
+        })?;
 
     let mut nodes = Vec::new();
     let file_path = path.to_string_lossy().to_string();
@@ -36,7 +38,11 @@ pub fn parse_with_edges(path: &Path, content: &str) -> Result<ParseResult> {
     // Insert file node as index 0
     nodes.push(Node {
         id: 0,
-        name: path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string(),
+        name: path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string(),
         kind: NodeKind::File,
         language: Language::Rust,
         file_path: file_path.clone(),
@@ -75,26 +81,26 @@ fn extract_definitions(
         _ => None,
     };
 
-    if let Some(kind) = kind {
-        if let Some(name) = extract_name(node, source, kind) {
-            let start = node.start_position();
-            let end = node.end_position();
-            let content = node.utf8_text(source.as_bytes()).ok().map(|s| {
-                // Truncate long content
-                crate::truncate_content(s, 500)
-            });
+    if let Some(kind) = kind
+        && let Some(name) = extract_name(node, source, kind)
+    {
+        let start = node.start_position();
+        let end = node.end_position();
+        let content = node.utf8_text(source.as_bytes()).ok().map(|s| {
+            // Truncate long content
+            crate::truncate_content(s, 500)
+        });
 
-            results.push(Node {
-                id: 0,
-                name,
-                kind,
-                language: Language::Rust,
-                file_path: file_path.to_string(),
-                line_start: (start.row + 1) as u32,
-                line_end: (end.row + 1) as u32,
-                content,
-            });
-        }
+        results.push(Node {
+            id: 0,
+            name,
+            kind,
+            language: Language::Rust,
+            file_path: file_path.to_string(),
+            line_start: (start.row + 1) as u32,
+            line_end: (end.row + 1) as u32,
+            content,
+        });
     }
 
     // Recurse into children — extract methods from impl blocks
@@ -121,24 +127,25 @@ fn extract_impl_methods(
         if child.kind() == "declaration_list" {
             let mut inner = child.walk();
             for item in child.children(&mut inner) {
-                if item.kind() == "function_item" {
-                    if let Some(name) = extract_name(item, source, NodeKind::Method) {
-                        let start = item.start_position();
-                        let end = item.end_position();
-                        let content = item.utf8_text(source.as_bytes()).ok().map(|s| {
-                            crate::truncate_content(s, 500)
-                        });
-                        results.push(Node {
-                            id: 0,
-                            name,
-                            kind: NodeKind::Method,
-                            language: Language::Rust,
-                            file_path: file_path.to_string(),
-                            line_start: (start.row + 1) as u32,
-                            line_end: (end.row + 1) as u32,
-                            content,
-                        });
-                    }
+                if item.kind() == "function_item"
+                    && let Some(name) = extract_name(item, source, NodeKind::Method)
+                {
+                    let start = item.start_position();
+                    let end = item.end_position();
+                    let content = item
+                        .utf8_text(source.as_bytes())
+                        .ok()
+                        .map(|s| crate::truncate_content(s, 500));
+                    results.push(Node {
+                        id: 0,
+                        name,
+                        kind: NodeKind::Method,
+                        language: Language::Rust,
+                        file_path: file_path.to_string(),
+                        line_start: (start.row + 1) as u32,
+                        line_end: (end.row + 1) as u32,
+                        content,
+                    });
                 }
             }
         }
@@ -158,7 +165,8 @@ fn extract_name(node: tree_sitter::Node, source: &str, kind: NodeKind) -> Option
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "identifier" || child.kind() == "type_identifier" {
-                    return child.utf8_text(source.as_bytes())
+                    return child
+                        .utf8_text(source.as_bytes())
                         .ok()
                         .map(|s| s.to_string());
                 }
@@ -214,7 +222,10 @@ pub fn main() {
         let nodes = parse(&path, SAMPLE_RUST).unwrap();
 
         let kinds: Vec<_> = nodes.iter().map(|n| n.kind).collect();
-        assert!(kinds.contains(&NodeKind::Import), "should find use declaration");
+        assert!(
+            kinds.contains(&NodeKind::Import),
+            "should find use declaration"
+        );
         assert!(kinds.contains(&NodeKind::Constant), "should find const");
         assert!(kinds.contains(&NodeKind::Struct), "should find struct");
         assert!(kinds.contains(&NodeKind::Enum), "should find enum");
@@ -227,8 +238,15 @@ pub fn main() {
         let path = PathBuf::from("test.rs");
         let nodes = parse(&path, SAMPLE_RUST).unwrap();
 
-        let methods: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
-        assert!(methods.len() >= 2, "should find impl methods (new, get), got {}", methods.len());
+        let methods: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Method)
+            .collect();
+        assert!(
+            methods.len() >= 2,
+            "should find impl methods (new, get), got {}",
+            methods.len()
+        );
         assert!(methods.iter().any(|m| m.name == "new"));
         assert!(methods.iter().any(|m| m.name == "get"));
     }
@@ -238,7 +256,10 @@ pub fn main() {
         let path = PathBuf::from("test.rs");
         let nodes = parse(&path, SAMPLE_RUST).unwrap();
 
-        let structs: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Struct).collect();
+        let structs: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Struct)
+            .collect();
         assert_eq!(structs.len(), 1);
         assert_eq!(structs[0].name, "Config");
         assert_eq!(structs[0].language, Language::Rust);
@@ -249,7 +270,9 @@ pub fn main() {
         let path = PathBuf::from("test.rs");
         let nodes = parse(&path, SAMPLE_RUST).unwrap();
 
-        let main_fn = nodes.iter().find(|n| n.name == "main" && n.kind == NodeKind::Function);
+        let main_fn = nodes
+            .iter()
+            .find(|n| n.name == "main" && n.kind == NodeKind::Function);
         assert!(main_fn.is_some(), "should find main function");
         let main_fn = main_fn.unwrap();
         assert!(main_fn.line_start > 0, "line numbers should be 1-indexed");
@@ -287,7 +310,10 @@ pub fn main() {
         let path = PathBuf::from("unicode.rs");
         // Must not panic — the old code would panic slicing mid-char
         let result = parse(&path, &arrow_fn);
-        assert!(result.is_ok(), "parsing multi-byte content should not panic");
+        assert!(
+            result.is_ok(),
+            "parsing multi-byte content should not panic"
+        );
         let nodes = result.unwrap();
         // Should find at least the file node
         assert!(!nodes.is_empty());
@@ -300,12 +326,18 @@ pub fn main() {
         let code = format!("fn long_function() {{\n{}}}\n", body);
         let path = PathBuf::from("long.rs");
         let nodes = parse(&path, &code).unwrap();
-        let fns: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
+        let fns: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Function)
+            .collect();
         assert_eq!(fns.len(), 1);
         assert_eq!(fns[0].name, "long_function");
         if let Some(content) = &fns[0].content {
             assert!(content.ends_with("..."), "long content should be truncated");
-            assert!(content.len() <= 503, "truncated content should be <= 503 bytes");
+            assert!(
+                content.len() <= 503,
+                "truncated content should be <= 503 bytes"
+            );
         }
     }
 

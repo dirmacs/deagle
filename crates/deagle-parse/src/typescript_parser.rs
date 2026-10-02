@@ -16,15 +16,19 @@ pub fn parse_with_edges(path: &Path, content: &str) -> Result<ParseResult> {
 
     // Use TSX parser (superset of TS — handles both .ts and .tsx)
     let language = tree_sitter_typescript::LANGUAGE_TSX;
-    parser.set_language(&language.into()).map_err(|e| DeagleError::Parse {
-        file: path.display().to_string(),
-        message: format!("Failed to set language: {}", e),
-    })?;
+    parser
+        .set_language(&language.into())
+        .map_err(|e| DeagleError::Parse {
+            file: path.display().to_string(),
+            message: format!("Failed to set language: {}", e),
+        })?;
 
-    let tree = parser.parse(content, None).ok_or_else(|| DeagleError::Parse {
-        file: path.display().to_string(),
-        message: "Failed to parse file".into(),
-    })?;
+    let tree = parser
+        .parse(content, None)
+        .ok_or_else(|| DeagleError::Parse {
+            file: path.display().to_string(),
+            message: "Failed to parse file".into(),
+        })?;
 
     let mut nodes = Vec::new();
     let file_path = path.to_string_lossy().to_string();
@@ -32,7 +36,11 @@ pub fn parse_with_edges(path: &Path, content: &str) -> Result<ParseResult> {
 
     nodes.push(Node {
         id: 0,
-        name: path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string(),
+        name: path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string(),
         kind: NodeKind::File,
         language: lang,
         file_path: file_path.clone(),
@@ -41,7 +49,14 @@ pub fn parse_with_edges(path: &Path, content: &str) -> Result<ParseResult> {
         content: None,
     });
 
-    extract_definitions(tree.root_node(), content, &file_path, lang, &mut nodes, false);
+    extract_definitions(
+        tree.root_node(),
+        content,
+        &file_path,
+        lang,
+        &mut nodes,
+        false,
+    );
 
     let mut edges = Vec::new();
     for i in 1..nodes.len() {
@@ -78,35 +93,36 @@ fn extract_definitions(
         _ => None,
     };
 
-    if let Some(kind) = kind {
-        if let Some(name) = extract_name(node, source, kind) {
-            let start = node.start_position();
-            let end = node.end_position();
-            let content = node.utf8_text(source.as_bytes()).ok().map(|s| {
-                crate::truncate_content(s, 500)
-            });
+    if let Some(kind) = kind
+        && let Some(name) = extract_name(node, source, kind)
+    {
+        let start = node.start_position();
+        let end = node.end_position();
+        let content = node
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(|s| crate::truncate_content(s, 500));
 
-            results.push(Node {
-                id: 0,
-                name,
-                kind,
-                language: lang,
-                file_path: file_path.to_string(),
-                line_start: (start.row + 1) as u32,
-                line_end: (end.row + 1) as u32,
-                content,
-            });
+        results.push(Node {
+            id: 0,
+            name,
+            kind,
+            language: lang,
+            file_path: file_path.to_string(),
+            line_start: (start.row + 1) as u32,
+            line_end: (end.row + 1) as u32,
+            content,
+        });
 
-            // Recurse into class body for methods
-            if kind == NodeKind::Class {
-                if let Some(body) = node.child_by_field_name("body") {
-                    let mut cursor = body.walk();
-                    for child in body.children(&mut cursor) {
-                        extract_definitions(child, source, file_path, lang, results, true);
-                    }
+        // Recurse into class body for methods
+        if kind == NodeKind::Class {
+            if let Some(body) = node.child_by_field_name("body") {
+                let mut cursor = body.walk();
+                for child in body.children(&mut cursor) {
+                    extract_definitions(child, source, file_path, lang, results, true);
                 }
-                return;
             }
+            return;
         }
     }
 
@@ -128,55 +144,62 @@ fn extract_lexical(
 ) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if child.kind() == "variable_declarator" {
-            if let Some(name_node) = child.child_by_field_name("name") {
-                let name = name_node.utf8_text(source.as_bytes()).unwrap_or_default().to_string();
-                // Check if value is an arrow function
-                let is_arrow = child.child_by_field_name("value")
-                    .map(|v| v.kind() == "arrow_function")
-                    .unwrap_or(false);
+        if child.kind() == "variable_declarator"
+            && let Some(name_node) = child.child_by_field_name("name")
+        {
+            let name = name_node
+                .utf8_text(source.as_bytes())
+                .unwrap_or_default()
+                .to_string();
+            // Check if value is an arrow function
+            let is_arrow = child
+                .child_by_field_name("value")
+                .map(|v| v.kind() == "arrow_function")
+                .unwrap_or(false);
 
-                let kind = if is_arrow {
-                    NodeKind::Function
-                } else if name.chars().all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit()) && !name.is_empty() {
-                    NodeKind::Constant
-                } else {
-                    return; // skip regular variables
-                };
+            let kind = if is_arrow {
+                NodeKind::Function
+            } else if name
+                .chars()
+                .all(|c| c.is_uppercase() || c == '_' || c.is_ascii_digit())
+                && !name.is_empty()
+            {
+                NodeKind::Constant
+            } else {
+                return; // skip regular variables
+            };
 
-                let start = node.start_position();
-                let end = node.end_position();
-                let content = node.utf8_text(source.as_bytes()).ok().map(|s| {
-                    crate::truncate_content(s, 500)
-                });
+            let start = node.start_position();
+            let end = node.end_position();
+            let content = node
+                .utf8_text(source.as_bytes())
+                .ok()
+                .map(|s| crate::truncate_content(s, 500));
 
-                results.push(Node {
-                    id: 0,
-                    name,
-                    kind,
-                    language: lang,
-                    file_path: file_path.to_string(),
-                    line_start: (start.row + 1) as u32,
-                    line_end: (end.row + 1) as u32,
-                    content,
-                });
-            }
+            results.push(Node {
+                id: 0,
+                name,
+                kind,
+                language: lang,
+                file_path: file_path.to_string(),
+                line_start: (start.row + 1) as u32,
+                line_end: (end.row + 1) as u32,
+                content,
+            });
         }
     }
 }
 
 fn extract_name(node: tree_sitter::Node, source: &str, kind: NodeKind) -> Option<String> {
     match kind {
-        NodeKind::Import => {
-            node.utf8_text(source.as_bytes())
-                .ok()
-                .map(|s| s.trim().to_string())
-        }
-        _ => {
-            node.child_by_field_name("name")
-                .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                .map(|s| s.to_string())
-        }
+        NodeKind::Import => node
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(|s| s.trim().to_string()),
+        _ => node
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .map(|s| s.to_string()),
     }
 }
 
@@ -242,8 +265,14 @@ export function main() {
         let kinds: Vec<_> = nodes.iter().map(|n| n.kind).collect();
         assert!(kinds.contains(&NodeKind::Import), "should find import");
         assert!(kinds.contains(&NodeKind::Constant), "should find constant");
-        assert!(kinds.contains(&NodeKind::Interface), "should find interface");
-        assert!(kinds.contains(&NodeKind::TypeAlias), "should find type alias");
+        assert!(
+            kinds.contains(&NodeKind::Interface),
+            "should find interface"
+        );
+        assert!(
+            kinds.contains(&NodeKind::TypeAlias),
+            "should find type alias"
+        );
         assert!(kinds.contains(&NodeKind::Enum), "should find enum");
         assert!(kinds.contains(&NodeKind::Class), "should find class");
         assert!(kinds.contains(&NodeKind::Function), "should find function");
@@ -253,7 +282,10 @@ export function main() {
     fn test_parse_ts_class_methods() {
         let path = PathBuf::from("app.ts");
         let nodes = parse(&path, SAMPLE_TS).unwrap();
-        let methods: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+        let methods: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Method)
+            .collect();
         assert!(methods.iter().any(|m| m.name == "start"));
         assert!(methods.iter().any(|m| m.name == "getConfig"));
         assert!(methods.iter().any(|m| m.name == "constructor"));
@@ -263,8 +295,14 @@ export function main() {
     fn test_parse_ts_arrow_function() {
         let path = PathBuf::from("app.ts");
         let nodes = parse(&path, SAMPLE_TS).unwrap();
-        let fns: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Function).collect();
-        assert!(fns.iter().any(|f| f.name == "handler"), "arrow function should be captured");
+        let fns: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Function)
+            .collect();
+        assert!(
+            fns.iter().any(|f| f.name == "handler"),
+            "arrow function should be captured"
+        );
         assert!(fns.iter().any(|f| f.name == "createServer"));
         assert!(fns.iter().any(|f| f.name == "main"));
     }
@@ -273,7 +311,10 @@ export function main() {
     fn test_parse_ts_interface() {
         let path = PathBuf::from("app.ts");
         let nodes = parse(&path, SAMPLE_TS).unwrap();
-        let ifaces: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Interface).collect();
+        let ifaces: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Interface)
+            .collect();
         assert_eq!(ifaces.len(), 1);
         assert_eq!(ifaces[0].name, "Config");
     }

@@ -42,11 +42,7 @@ pub fn search_pattern(
     }
 }
 
-fn search_rust(
-    path: &Path,
-    content: &str,
-    pattern: &str,
-) -> Result<Vec<PatternMatch>> {
+fn search_rust(path: &Path, content: &str, pattern: &str) -> Result<Vec<PatternMatch>> {
     use ast_grep_core::{AstGrep, Pattern};
     use ast_grep_language::SupportLang;
 
@@ -62,9 +58,8 @@ fn search_rust(
         .chain(content.match_indices('\n').map(|(i, _)| i + 1))
         .collect();
 
-    let byte_to_line = |byte: usize| -> u32 {
-        (line_starts.partition_point(|&s| s <= byte)) as u32
-    };
+    let byte_to_line =
+        |byte: usize| -> u32 { (line_starts.partition_point(|&s| s <= byte)) as u32 };
 
     let matches: Vec<PatternMatch> = grep
         .root()
@@ -130,35 +125,40 @@ impl Config {
     fn test_find_functions() {
         let path = PathBuf::from("test.rs");
         let matches = search_pattern(&path, SAMPLE, "fn $NAME() { $$$ }", Language::Rust).unwrap();
-        assert!(
-            !matches.is_empty(),
-            "should find zero-arg functions"
-        );
+        assert!(!matches.is_empty(), "should find zero-arg functions");
     }
 
     #[test]
     fn test_find_struct_definitions() {
         let path = PathBuf::from("test.rs");
-        let matches = search_pattern(&path, SAMPLE, "struct $NAME { $$$ }", Language::Rust).unwrap();
-        assert!(
-            !matches.is_empty(),
-            "should find struct definitions"
-        );
+        let matches =
+            search_pattern(&path, SAMPLE, "struct $NAME { $$$ }", Language::Rust).unwrap();
+        assert!(!matches.is_empty(), "should find struct definitions");
         assert!(matches[0].text.contains("Config"));
     }
 
     #[test]
     fn test_no_matches() {
         let path = PathBuf::from("test.rs");
-        let matches = search_pattern(&path, SAMPLE, "async fn $NAME() { $$$ }", Language::Rust).unwrap();
+        let matches =
+            search_pattern(&path, SAMPLE, "async fn $NAME() { $$$ }", Language::Rust).unwrap();
         assert!(matches.is_empty(), "should find no async functions");
     }
 
     #[test]
     fn test_unsupported_language_returns_empty() {
         let path = PathBuf::from("test.py");
-        let matches = search_pattern(&path, "def hello(): pass", "def $NAME(): $$$", Language::Python).unwrap();
-        assert!(matches.is_empty(), "unsupported language returns empty for now");
+        let matches = search_pattern(
+            &path,
+            "def hello(): pass",
+            "def $NAME(): $$$",
+            Language::Python,
+        )
+        .unwrap();
+        assert!(
+            matches.is_empty(),
+            "unsupported language returns empty for now"
+        );
     }
 
     #[test]

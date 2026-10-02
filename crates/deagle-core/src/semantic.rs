@@ -4,7 +4,7 @@
 //! Requires the `semantic` feature flag and pre-computed embeddings.
 
 use crate::{DeagleError, Node, Result};
-use ares_vector::{VectorDb, Config, DistanceMetric, VectorMetadata};
+use ares_vector::{Config, DistanceMetric, VectorDb, VectorMetadata};
 
 /// Semantic search index backed by ares-vector.
 pub struct SemanticIndex {
@@ -16,12 +16,12 @@ impl SemanticIndex {
     /// Create an in-memory semantic index.
     pub async fn in_memory(collection: &str, dimensions: usize) -> Result<Self> {
         let config = Config::memory();
-        let store: std::result::Result<VectorDb, ares_vector::Error> =
-            VectorDb::open(config).await;
+        let store: std::result::Result<VectorDb, ares_vector::Error> = VectorDb::open(config).await;
         let store = store.map_err(|e| DeagleError::Other(format!("vector store: {}", e)))?;
 
-        let cr: std::result::Result<(), ares_vector::Error> =
-            store.create_collection(collection, dimensions, DistanceMetric::Cosine).await;
+        let cr: std::result::Result<(), ares_vector::Error> = store
+            .create_collection(collection, dimensions, DistanceMetric::Cosine)
+            .await;
         cr.map_err(|e| DeagleError::Other(format!("create collection: {}", e)))?;
 
         Ok(Self {
@@ -37,13 +37,13 @@ impl SemanticIndex {
         dimensions: usize,
     ) -> Result<Self> {
         let config = Config::persistent(path);
-        let store: std::result::Result<VectorDb, ares_vector::Error> =
-            VectorDb::open(config).await;
+        let store: std::result::Result<VectorDb, ares_vector::Error> = VectorDb::open(config).await;
         let store = store.map_err(|e| DeagleError::Other(format!("vector store: {}", e)))?;
 
         if !store.collection_exists(collection) {
-            let cr: std::result::Result<(), ares_vector::Error> =
-                store.create_collection(collection, dimensions, DistanceMetric::Cosine).await;
+            let cr: std::result::Result<(), ares_vector::Error> = store
+                .create_collection(collection, dimensions, DistanceMetric::Cosine)
+                .await;
             cr.map_err(|e| DeagleError::Other(format!("create collection: {}", e)))?;
         }
 

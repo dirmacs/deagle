@@ -1,8 +1,8 @@
 //! Ruby language parser using tree-sitter-ruby.
 
+use crate::ParseResult;
 use deagle_core::{DeagleError, EdgeKind, Language, Node, NodeKind, Result};
 use std::path::Path;
-use crate::ParseResult;
 
 pub fn parse(path: &Path, content: &str) -> Result<Vec<Node>> {
     parse_with_edges(path, content).map(|r| r.nodes)
@@ -11,22 +11,30 @@ pub fn parse(path: &Path, content: &str) -> Result<Vec<Node>> {
 pub fn parse_with_edges(path: &Path, content: &str) -> Result<ParseResult> {
     let mut parser = tree_sitter::Parser::new();
     let language = tree_sitter_ruby::LANGUAGE;
-    parser.set_language(&language.into()).map_err(|e| DeagleError::Parse {
-        file: path.display().to_string(),
-        message: format!("Failed to set language: {}", e),
-    })?;
+    parser
+        .set_language(&language.into())
+        .map_err(|e| DeagleError::Parse {
+            file: path.display().to_string(),
+            message: format!("Failed to set language: {}", e),
+        })?;
 
-    let tree = parser.parse(content, None).ok_or_else(|| DeagleError::Parse {
-        file: path.display().to_string(),
-        message: "Failed to parse file".into(),
-    })?;
+    let tree = parser
+        .parse(content, None)
+        .ok_or_else(|| DeagleError::Parse {
+            file: path.display().to_string(),
+            message: "Failed to parse file".into(),
+        })?;
 
     let mut nodes = Vec::new();
     let file_path = path.to_string_lossy().to_string();
 
     nodes.push(Node {
         id: 0,
-        name: path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string(),
+        name: path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string(),
         kind: NodeKind::File,
         language: Language::Ruby,
         file_path: file_path.clone(),
@@ -44,7 +52,12 @@ pub fn parse_with_edges(path: &Path, content: &str) -> Result<ParseResult> {
     Ok(ParseResult { nodes, edges })
 }
 
-fn extract_definitions(node: tree_sitter::Node, source: &str, file_path: &str, results: &mut Vec<Node>) {
+fn extract_definitions(
+    node: tree_sitter::Node,
+    source: &str,
+    file_path: &str,
+    results: &mut Vec<Node>,
+) {
     let kind = match node.kind() {
         "method" | "singleton_method" => Some(NodeKind::Method),
         "class" => Some(NodeKind::Class),
@@ -66,21 +79,25 @@ fn extract_definitions(node: tree_sitter::Node, source: &str, file_path: &str, r
         _ => None,
     };
 
-    if let Some(kind) = kind {
-        if let Some(name) = extract_name(node, source, kind) {
-            let start = node.start_position();
-            let end = node.end_position();
-            let content = node.utf8_text(source.as_bytes()).ok().map(|s| {
-                crate::truncate_content(s, 500)
-            });
-            results.push(Node {
-                id: 0, name, kind, language: Language::Ruby,
-                file_path: file_path.to_string(),
-                line_start: (start.row + 1) as u32,
-                line_end: (end.row + 1) as u32,
-                content,
-            });
-        }
+    if let Some(kind) = kind
+        && let Some(name) = extract_name(node, source, kind)
+    {
+        let start = node.start_position();
+        let end = node.end_position();
+        let content = node
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(|s| crate::truncate_content(s, 500));
+        results.push(Node {
+            id: 0,
+            name,
+            kind,
+            language: Language::Ruby,
+            file_path: file_path.to_string(),
+            line_start: (start.row + 1) as u32,
+            line_end: (end.row + 1) as u32,
+            content,
+        });
     }
 
     let mut cursor = node.walk();
@@ -91,31 +108,35 @@ fn extract_definitions(node: tree_sitter::Node, source: &str, file_path: &str, r
 
 fn extract_name(node: tree_sitter::Node, source: &str, kind: NodeKind) -> Option<String> {
     match kind {
-        NodeKind::Class | NodeKind::Module => {
-            node.child_by_field_name("name")
-                .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                .map(|s| s.to_string())
-        }
-        NodeKind::Method => {
-            node.child_by_field_name("name")
-                .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                .map(|s| s.to_string())
-        }
+        NodeKind::Class | NodeKind::Module => node
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .map(|s| s.to_string()),
+        NodeKind::Method => node
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .map(|s| s.to_string()),
         NodeKind::Constant => {
             // constant_assignment: NAME = value
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "constant" {
-                    return child.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+                    return child
+                        .utf8_text(source.as_bytes())
+                        .ok()
+                        .map(|s| s.to_string());
                 }
             }
             None
         }
         NodeKind::Import => {
             // require "name" or require_relative "name"
-            node.utf8_text(source.as_bytes()).ok().map(|s| s.trim().to_string())
+            node.utf8_text(source.as_bytes())
+                .ok()
+                .map(|s| s.trim().to_string())
         }
-        _ => node.child_by_field_name("name")
+        _ => node
+            .child_by_field_name("name")
             .and_then(|n| n.utf8_text(source.as_bytes()).ok())
             .map(|s| s.to_string()),
     }
@@ -183,15 +204,24 @@ end
         let path = PathBuf::from("app.rb");
         let nodes = parse(&path, SAMPLE_RUBY).unwrap();
         let classes: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Class).collect();
-        assert!(classes.iter().any(|c| c.name == "Dog"), "should find Dog class");
-        assert!(classes.iter().any(|c| c.name == "Cat"), "should find Cat class");
+        assert!(
+            classes.iter().any(|c| c.name == "Dog"),
+            "should find Dog class"
+        );
+        assert!(
+            classes.iter().any(|c| c.name == "Cat"),
+            "should find Cat class"
+        );
     }
 
     #[test]
     fn test_parse_ruby_module() {
         let path = PathBuf::from("app.rb");
         let nodes = parse(&path, SAMPLE_RUBY).unwrap();
-        let mods: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Module).collect();
+        let mods: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Module)
+            .collect();
         assert_eq!(mods.len(), 1);
         assert_eq!(mods[0].name, "Animals");
     }
@@ -200,11 +230,23 @@ end
     fn test_parse_ruby_methods() {
         let path = PathBuf::from("app.rb");
         let nodes = parse(&path, SAMPLE_RUBY).unwrap();
-        let methods: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
-        assert!(methods.iter().any(|m| m.name == "initialize"), "should find initialize");
+        let methods: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Method)
+            .collect();
+        assert!(
+            methods.iter().any(|m| m.name == "initialize"),
+            "should find initialize"
+        );
         assert!(methods.iter().any(|m| m.name == "bark"), "should find bark");
-        assert!(methods.iter().any(|m| m.name == "greet"), "should find greet");
-        assert!(methods.iter().any(|m| m.name == "species"), "should find singleton method species");
+        assert!(
+            methods.iter().any(|m| m.name == "greet"),
+            "should find greet"
+        );
+        assert!(
+            methods.iter().any(|m| m.name == "species"),
+            "should find singleton method species"
+        );
     }
 
     #[test]
@@ -225,7 +267,14 @@ end
     fn test_parse_ruby_requires() {
         let path = PathBuf::from("app.rb");
         let nodes = parse(&path, SAMPLE_RUBY).unwrap();
-        let imports: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Import).collect();
-        assert!(imports.len() >= 2, "should find require and require_relative, got {}", imports.len());
+        let imports: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Import)
+            .collect();
+        assert!(
+            imports.len() >= 2,
+            "should find require and require_relative, got {}",
+            imports.len()
+        );
     }
 }

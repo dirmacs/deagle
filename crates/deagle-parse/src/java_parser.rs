@@ -12,22 +12,30 @@ pub fn parse(path: &Path, content: &str) -> Result<Vec<Node>> {
 pub fn parse_with_edges(path: &Path, content: &str) -> Result<ParseResult> {
     let mut parser = tree_sitter::Parser::new();
     let language = tree_sitter_java::LANGUAGE;
-    parser.set_language(&language.into()).map_err(|e| DeagleError::Parse {
-        file: path.display().to_string(),
-        message: format!("Failed to set language: {}", e),
-    })?;
+    parser
+        .set_language(&language.into())
+        .map_err(|e| DeagleError::Parse {
+            file: path.display().to_string(),
+            message: format!("Failed to set language: {}", e),
+        })?;
 
-    let tree = parser.parse(content, None).ok_or_else(|| DeagleError::Parse {
-        file: path.display().to_string(),
-        message: "Failed to parse file".into(),
-    })?;
+    let tree = parser
+        .parse(content, None)
+        .ok_or_else(|| DeagleError::Parse {
+            file: path.display().to_string(),
+            message: "Failed to parse file".into(),
+        })?;
 
     let mut nodes = Vec::new();
     let file_path = path.to_string_lossy().to_string();
 
     nodes.push(Node {
         id: 0,
-        name: path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown").to_string(),
+        name: path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown")
+            .to_string(),
         kind: NodeKind::File,
         language: Language::Java,
         file_path: file_path.clone(),
@@ -54,7 +62,11 @@ fn extract_definitions(
     inside_class: bool,
 ) {
     let kind = match node.kind() {
-        "method_declaration" => Some(if inside_class { NodeKind::Method } else { NodeKind::Function }),
+        "method_declaration" => Some(if inside_class {
+            NodeKind::Method
+        } else {
+            NodeKind::Function
+        }),
         "constructor_declaration" => Some(NodeKind::Method),
         "class_declaration" => Some(NodeKind::Class),
         "interface_declaration" => Some(NodeKind::Interface),
@@ -74,38 +86,42 @@ fn extract_definitions(
         _ => None,
     };
 
-    if let Some(kind) = kind {
-        if let Some(name) = extract_name(node, source, kind) {
-            let start = node.start_position();
-            let end = node.end_position();
-            let content = node.utf8_text(source.as_bytes()).ok().map(|s| {
-                crate::truncate_content(s, 500)
-            });
+    if let Some(kind) = kind
+        && let Some(name) = extract_name(node, source, kind)
+    {
+        let start = node.start_position();
+        let end = node.end_position();
+        let content = node
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(|s| crate::truncate_content(s, 500));
 
-            results.push(Node {
-                id: 0,
-                name,
-                kind,
-                language: Language::Java,
-                file_path: file_path.to_string(),
-                line_start: (start.row + 1) as u32,
-                line_end: (end.row + 1) as u32,
-                content,
-            });
+        results.push(Node {
+            id: 0,
+            name,
+            kind,
+            language: Language::Java,
+            file_path: file_path.to_string(),
+            line_start: (start.row + 1) as u32,
+            line_end: (end.row + 1) as u32,
+            content,
+        });
 
-            if kind == NodeKind::Class || kind == NodeKind::Interface || kind == NodeKind::Enum {
-                if let Some(body) = node.child_by_field_name("body") {
-                    let mut cursor = body.walk();
-                    for child in body.children(&mut cursor) {
-                        extract_definitions(child, source, file_path, results, true);
-                    }
+        if kind == NodeKind::Class || kind == NodeKind::Interface || kind == NodeKind::Enum {
+            if let Some(body) = node.child_by_field_name("body") {
+                let mut cursor = body.walk();
+                for child in body.children(&mut cursor) {
+                    extract_definitions(child, source, file_path, results, true);
                 }
-                return;
             }
+            return;
         }
     }
 
-    if !matches!(node.kind(), "class_declaration" | "interface_declaration" | "enum_declaration") {
+    if !matches!(
+        node.kind(),
+        "class_declaration" | "interface_declaration" | "enum_declaration"
+    ) {
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
             extract_definitions(child, source, file_path, results, inside_class);
@@ -115,28 +131,28 @@ fn extract_definitions(
 
 fn extract_name(node: tree_sitter::Node, source: &str, kind: NodeKind) -> Option<String> {
     match kind {
-        NodeKind::Import | NodeKind::Module => {
-            node.utf8_text(source.as_bytes()).ok().map(|s| s.trim().to_string())
-        }
+        NodeKind::Import | NodeKind::Module => node
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(|s| s.trim().to_string()),
         NodeKind::Constant => {
             // For field_declaration with static final, find the variable_declarator name
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
-                if child.kind() == "variable_declarator" {
-                    if let Some(n) = child.child_by_field_name("name") {
-                        return n.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
-                    }
+                if child.kind() == "variable_declarator"
+                    && let Some(n) = child.child_by_field_name("name")
+                {
+                    return n.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
                 }
             }
             node.child_by_field_name("name")
                 .and_then(|n| n.utf8_text(source.as_bytes()).ok())
                 .map(|s| s.to_string())
         }
-        _ => {
-            node.child_by_field_name("name")
-                .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                .map(|s| s.to_string())
-        }
+        _ => node
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .map(|s| s.to_string()),
     }
 }
 
@@ -207,7 +223,10 @@ enum Priority {
     fn test_parse_java_methods() {
         let path = PathBuf::from("App.java");
         let nodes = parse(&path, SAMPLE_JAVA).unwrap();
-        let methods: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Method).collect();
+        let methods: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Method)
+            .collect();
         assert!(methods.iter().any(|m| m.name == "getName"));
         assert!(methods.iter().any(|m| m.name == "process"));
     }
@@ -216,7 +235,10 @@ enum Priority {
     fn test_parse_java_interface() {
         let path = PathBuf::from("App.java");
         let nodes = parse(&path, SAMPLE_JAVA).unwrap();
-        let ifaces: Vec<_> = nodes.iter().filter(|n| n.kind == NodeKind::Interface).collect();
+        let ifaces: Vec<_> = nodes
+            .iter()
+            .filter(|n| n.kind == NodeKind::Interface)
+            .collect();
         assert_eq!(ifaces.len(), 1);
         assert_eq!(ifaces[0].name, "Service");
     }
