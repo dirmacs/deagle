@@ -20,6 +20,23 @@
 //! deagle-parse = "0.3"                                           # parsing only
 //! deagle-parse = { version = "0.3", features = ["pattern", "text-search"] }
 //! ```
+//!
+//! ## Serialization
+//!
+//! The two match types differ here, deliberately, and the reason is not visible
+//! from the `derive` line alone:
+//!
+//! - `text_search::TextMatch` derives `Serialize`. The CLI's `deagle rg --json`
+//!   writes it out directly, so nothing else would need it.
+//! - `pattern::PatternMatch` does **not**. `deagle sg` has `--column` but no
+//!   `--json`, so no surface currently serialises it — the derive would be dead
+//!   API surface.
+//!
+//! So if you want structural matches as JSON, the change is one line *here*
+//! (add the derive), not in your own code. Note that on any published version
+//! both types are `Debug, Clone` only: the asymmetry appears with the release
+//! that first ships `TextMatch`'s location fields, so an integrator reading a
+//! published crate will not see it until they upgrade.
 
 pub mod c_parser;
 pub mod cpp_parser;
