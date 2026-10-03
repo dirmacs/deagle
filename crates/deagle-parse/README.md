@@ -13,8 +13,20 @@ Multi-language tree-sitter code parser for [deagle](https://github.com/dirmacs/d
 
 ## Features
 
-- `pattern` — structural AST search via ast-grep (`search_pattern`)
-- `text-search` — regex text search via ripgrep library crates
+> **Feature flags:** `deagle-parse` ships with **no default features**. Enable `pattern` for ast-grep structural search and `text-search` for ripgrep-grade regex search. Without either, only tree-sitter parsing is available — `deagle_parse::pattern` and `deagle_parse::text_search` are `#[cfg]`-gated, so a consumer that forgets them gets an `unresolved import` error rather than a silent no-op.
+
+| Feature | Default | Enables |
+|---------|---------|---------|
+| `pattern` | off | structural AST search via ast-grep (`search_pattern`) |
+| `text-search` | off | regex text search via ripgrep library crates (`text_search`) |
+
+```toml
+[dependencies]
+# tree-sitter parsing only
+deagle-parse = "0.3"
+# ...plus structural and regex search
+deagle-parse = { version = "0.3", features = ["pattern", "text-search"] }
+```
 
 ## Usage
 

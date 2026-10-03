@@ -5,7 +5,21 @@
 //!
 //! ## Feature Flags
 //!
+//! This crate ships with **no default features**. Only tree-sitter parsing is
+//! available unless you opt in:
+//!
 //! - `pattern` — structural pattern matching via [ast-grep-core](https://crates.io/crates/ast-grep-core)
+//! - `text-search` — regex text search via [grep-searcher](https://crates.io/crates/grep-searcher)
+//!
+//! `pattern` and `text_search` are `#[cfg]`-gated modules, so a dependency
+//! declared without these features compiles and parses, but referencing
+//! `deagle_parse::pattern` or `deagle_parse::text_search` fails with an
+//! `unresolved import` error:
+//!
+//! ```toml
+//! deagle-parse = "0.3"                                           # parsing only
+//! deagle-parse = { version = "0.3", features = ["pattern", "text-search"] }
+//! ```
 
 pub mod c_parser;
 pub mod cpp_parser;
