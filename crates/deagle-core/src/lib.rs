@@ -213,6 +213,13 @@ pub struct GraphDb {
 }
 
 #[cfg(feature = "sqlite")]
+/// `metadata` key holding the absolute root a database was indexed from.
+///
+/// Paths in the index are keyed relative to that root, so a database is only
+/// meaningful for one root. Callers that accumulate an index should compare
+/// against this and refuse a mismatch rather than corrupt the graph -- see #6.
+pub const INDEX_ROOT_KEY: &str = "index_root";
+
 impl GraphDb {
     /// Open or create a graph database at the given path.
     pub fn open(path: &std::path::Path) -> Result<Self> {

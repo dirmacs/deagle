@@ -157,9 +157,6 @@ struct MapRequest {
     force: Option<bool>,
 }
 
-/// `metadata` key holding the absolute root this database was indexed from.
-const INDEX_ROOT_KEY: &str = "index_root";
-
 #[derive(Serialize)]
 struct MapResponse {
     files: usize,
@@ -191,11 +188,11 @@ async fn map(
     if req.force.unwrap_or(false) {
         db.clear()
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-        db.metadata_set(INDEX_ROOT_KEY, &dir_str)
+        db.metadata_set(deagle_core::INDEX_ROOT_KEY, &dir_str)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     } else {
         match db
-            .metadata_get(INDEX_ROOT_KEY)
+            .metadata_get(deagle_core::INDEX_ROOT_KEY)
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         {
             Some(stored) if stored != dir_str => {
@@ -210,7 +207,7 @@ async fn map(
                 ));
             }
             None => db
-                .metadata_set(INDEX_ROOT_KEY, &dir_str)
+                .metadata_set(deagle_core::INDEX_ROOT_KEY, &dir_str)
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
             Some(_) => {}
         }
