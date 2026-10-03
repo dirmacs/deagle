@@ -156,6 +156,10 @@ struct MapRequest {
 struct MapResponse {
     files: usize,
     entities: usize,
+    /// Relationships indexed alongside the nodes. Reported because a caller
+    /// cannot otherwise tell a graph from a bag of nodes: both count entities,
+    /// and this endpoint used to silently index zero edges.
+    edges: usize,
 }
 
 async fn map(
@@ -173,6 +177,7 @@ async fn map(
 
     let mut files = 0usize;
     let mut entities = 0usize;
+    let mut edges = 0usize;
 
     let walker = ignore::WalkBuilder::new(&dir)
         .hidden(true)
@@ -197,16 +202,44 @@ async fn map(
         }
 
         let rel = path.strip_prefix(&dir).unwrap_or(path);
-        if let Ok(nodes) = deagle_parse::parse_file(rel, &content, lang) {
-            for n in &nodes {
-                let _ = db.insert_node(n);
+        if let Ok(result) = deagle_parse::parse_file_with_edges(rel, &content, lang) {
+            // Nodes first: edges reference nodes by index into the parse
+            // result, so they can only be resolved once the nodes have
+            // database ids.
+            let db_ids = db
+                .insert_batch(&result.nodes, &[])
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+            for (from_idx, to_idx, kind) in &result.edges {
+                match (db_ids.get(*from_idx), db_ids.get(*to_idx)) {
+                    (Some(&from_id), Some(&to_id)) if from_id > 0 && to_id > 0 => {
+                        let _ = db.insert_edge(&deagle_core::Edge {
+                            from_id,
+                            to_id,
+                            kind: *kind,
+                            // Every edge a parser emits is structural
+                            // containment, not an inference — same reasoning
+                            // as the CLI's `deagle map`.
+                            confidence: 1.0,
+                        });
+                        edges += 1;
+                    }
+                    // An edge naming a node the parser did not emit is
+                    // skipped rather than guessed at, and not counted.
+                    _ => {}
+                }
             }
-            entities += nodes.len();
+
+            entities += result.nodes.len();
             files += 1;
         }
     }
 
-    Ok(Json(MapResponse { files, entities }))
+    Ok(Json(MapResponse {
+        files,
+        entities,
+        edges,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -374,6 +407,74 @@ mod tests {
         let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
         let sr: SearchResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(sr.count, 0);
+    }
+
+    /// `POST /api/map` must index a graph, not a bag of nodes. It used to call
+    /// `parse_file` and insert nodes only, so edges were silently zero while the
+    /// CLI indexed them. Asserts against the database, not just the response.
+    #[tokio::test]
+    async fn test_map_indexes_edges() {
+        let dir = std::env::temp_dir().join(format!("deagle-map-edges-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("lib.rs"),
+            "struct Config { name: String }\n\nfn helper() -> i32 { 42 }\n",
+        )
+        .unwrap();
+
+        let db = GraphDb::in_memory().unwrap();
+        let state = Arc::new(AppState {
+            db: Mutex::new(db),
+            root_dir: dir.clone(),
+        });
+        let app = Router::new()
+            .route("/api/map", post(map))
+            .route("/api/stats", get(stats))
+            .with_state(state);
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/map")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(json["files"], 1);
+        assert!(
+            json["entities"].as_u64().unwrap() > 0,
+            "entities were already indexed"
+        );
+
+        // The response now reports edges, and that count must be real: the file
+        // node contains each definition, so at least two CONTAINS edges exist.
+        let reported = json["edges"]
+            .as_u64()
+            .expect("map must report an edge count");
+        assert!(
+            reported >= 2,
+            "expected at least 2 containment edges, response said {reported}"
+        );
+
+        // Control: the same database, read back through /api/stats. A response
+        // field alone could be a hardcoded number; this cannot.
+        let resp = app
+            .oneshot(Request::get("/api/stats").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let stats: StatsResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            stats.edges as u64, reported,
+            "reported edge count must match what the database actually holds"
+        );
     }
 
     /// `POST /api/rg` must report where each match landed: a 1-indexed
