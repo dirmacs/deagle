@@ -150,6 +150,11 @@ async fn stats(
 #[derive(Deserialize)]
 struct MapRequest {
     dir: Option<String>,
+    /// Clear the whole graph before indexing. Defaults to false, matching
+    /// `deagle map` (which clears only under `--force`) and `deagle_map` (which
+    /// never clears). Without this, incremental indexing would take away the only
+    /// way an HTTP caller had to reset.
+    force: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -172,8 +177,10 @@ async fn map(
         .unwrap_or_else(|| state.root_dir.clone());
 
     let db = state.db.lock().await;
-    db.clear()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    if req.force.unwrap_or(false) {
+        db.clear()
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    }
 
     let mut files = 0usize;
     let mut entities = 0usize;
@@ -202,7 +209,27 @@ async fn map(
         }
 
         let rel = path.strip_prefix(&dir).unwrap_or(path);
+        let rel_str = rel.to_string_lossy().to_string();
+
+        // Skip files whose content is unchanged since the last index. This is
+        // what the stored hashes exist for; without them every call re-parses
+        // and re-inserts the entire tree.
+        match db.needs_reindex(&rel_str, &content) {
+            Ok(false) => continue,
+            Ok(true) => {}
+            Err(e) => {
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+            }
+        }
+
         if let Ok(result) = deagle_parse::parse_file_with_edges(rel, &content, lang) {
+            // Replace this file's rows rather than adding alongside them, so a
+            // re-index of changed content does not duplicate its nodes and
+            // edges. Skipping above and replacing here must both be present:
+            // skip without replace leaves stale rows, replace without skip
+            // redoes the work.
+            let _ = db.remove_file(&rel_str);
+
             // Nodes first: edges reference nodes by index into the parse
             // result, so they can only be resolved once the nodes have
             // database ids.
@@ -232,6 +259,8 @@ async fn map(
 
             entities += result.nodes.len();
             files += 1;
+
+            let _ = db.store_file_hash(&rel_str, &content);
         }
     }
 
@@ -407,6 +436,157 @@ mod tests {
         let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
         let sr: SearchResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(sr.count, 0);
+    }
+
+    /// `POST /api/map` must index incrementally. It used to `clear()` the whole
+    /// graph and re-insert every file on every call, and it never stored file
+    /// hashes, so `needs_reindex` had nothing to compare against.
+    ///
+    /// Asserts against `/api/stats` after each call, not against the response
+    /// alone: the dangerous variant is a skip added *without* the per-file
+    /// replace, where a changed file is inserted alongside its old rows and the
+    /// response still looks right.
+    #[tokio::test]
+    async fn test_map_indexes_incrementally() {
+        let dir = std::env::temp_dir().join(format!("deagle-map-incr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("lib.rs");
+        std::fs::write(
+            &file,
+            "struct Config { name: String }\n\nfn helper() -> i32 { 42 }\n",
+        )
+        .unwrap();
+
+        let db = GraphDb::in_memory().unwrap();
+        let state = Arc::new(AppState {
+            db: Mutex::new(db),
+            root_dir: dir.clone(),
+        });
+        let app = Router::new()
+            .route("/api/map", post(map))
+            .route("/api/stats", get(stats))
+            .with_state(state);
+
+        // First call indexes the fixture.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/map")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let first: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(first["files"], 1, "first call indexes the one file");
+        let first_entities = first["entities"].as_u64().unwrap();
+        assert!(first_entities > 0);
+
+        // Second call with nothing touched must skip it. This is the assertion
+        // that fails today: the handler re-indexes everything and reports 1.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/map")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let second: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            second["files"], 0,
+            "unchanged file must be skipped, not re-indexed"
+        );
+
+        // And the graph must not have grown.
+        let resp = app
+            .clone()
+            .oneshot(Request::get("/api/stats").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let stats: StatsResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            stats.nodes as u64, first_entities,
+            "a skipped file must leave the graph untouched"
+        );
+
+        // Change the file. The old rows must be replaced, not joined.
+        std::fs::write(
+            &file,
+            "struct Config { name: String }\n\nfn helper() -> i32 { 42 }\n\nfn extra() -> u8 { 7 }\n",
+        )
+        .unwrap();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/map")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let third: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(third["files"], 1, "the changed file is re-indexed");
+        let third_entities = third["entities"].as_u64().unwrap();
+        assert!(
+            third_entities > first_entities,
+            "the added function must produce more entities"
+        );
+
+        // The control that catches skip-without-replace: without `remove_file`,
+        // the graph holds the old rows *and* the new ones, and this is where that
+        // shows up. Exactly the reported count, nothing carried over.
+        let resp = app
+            .clone()
+            .oneshot(Request::get("/api/stats").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let stats: StatsResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            stats.nodes as u64, third_entities,
+            "re-indexing a changed file must replace its rows, not duplicate them"
+        );
+
+        // `force` is a capability I added, so it gets its own assertion rather
+        // than shipping untested: it must rebuild from scratch, which means the
+        // totals come back identical instead of doubling.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/api/map")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"force":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let forced: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(forced["files"], 1, "force re-indexes even unchanged files");
+
+        let resp = app
+            .clone()
+            .oneshot(Request::get("/api/stats").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let stats: StatsResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            stats.nodes as u64, third_entities,
+            "a forced rebuild clears first, so totals must not accumulate"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// `POST /api/map` must index a graph, not a bag of nodes. It used to call
