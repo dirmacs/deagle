@@ -88,6 +88,14 @@ struct MapOutput {
 struct GrepMatch {
     file: String,
     line: u32,
+    /// 1-indexed character column of the match within its line. Absent for
+    /// structural (ast-grep) matches, which report no column.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    column: Option<u64>,
+    /// Byte offset of the match from the start of the file. Absent for
+    /// structural (ast-grep) matches, which report no byte offset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    byte_offset: Option<u64>,
     text: String,
 }
 
@@ -321,6 +329,8 @@ impl DeagleMcp {
                     matches.push(GrepMatch {
                         file: m.file_path,
                         line: m.line_start,
+                        column: None,
+                        byte_offset: None,
                         text: m.text.lines().next().unwrap_or("").to_string(),
                     });
                 }
@@ -358,6 +368,8 @@ impl DeagleMcp {
             .map(|m| GrepMatch {
                 file: m.file_path,
                 line: m.line_number as u32,
+                column: Some(m.column),
+                byte_offset: Some(m.byte_offset),
                 text: m.line,
             })
             .collect();
@@ -397,4 +409,62 @@ async fn main() {
     let _server = server.serve(transport).await.expect("MCP server failed");
 
     eprintln!("deagle-mcp shutting down");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `deagle_rg` tool must report where each match landed: a 1-indexed
+    /// character column, and a byte offset that indexes the file.
+    #[test]
+    fn rg_reports_column_and_byte_offset() {
+        let dir = std::env::temp_dir().join(format!("deagle-rg-mcp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.rs"), "// ééé // TODO\n").unwrap();
+
+        let mcp = DeagleMcp::new(GraphDb::in_memory().unwrap(), dir.clone());
+        let out = mcp.rg(Parameters(PatternParams {
+            pattern: "TODO".to_string(),
+            dir: Some(dir.to_string_lossy().into_owned()),
+        }));
+        let on_disk = std::fs::read(dir.join("a.rs")).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(out.0.count, 1);
+        let m = &out.0.matches[0];
+        // "é" is two bytes, so the character column (11) and the byte offset
+        // (13) disagree -- that is the distinction under test.
+        assert_eq!(m.column, Some(11));
+        assert_eq!(m.byte_offset, Some(13));
+        assert!(
+            on_disk[13..].starts_with(b"TODO"),
+            "byte_offset must index the file at the match"
+        );
+    }
+
+    /// Structural search has no column to report, so it must omit the field
+    /// rather than claim column 0.
+    #[test]
+    fn sg_omits_column_and_byte_offset() {
+        let dir = std::env::temp_dir().join(format!("deagle-sg-mcp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("a.rs"),
+            "fn main() { let x = Some(1).unwrap(); }\n",
+        )
+        .unwrap();
+
+        let mcp = DeagleMcp::new(GraphDb::in_memory().unwrap(), dir.clone());
+        let out = mcp.sg(Parameters(PatternParams {
+            pattern: "$X.unwrap()".to_string(),
+            dir: Some(dir.to_string_lossy().into_owned()),
+        }));
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert!(out.0.count > 0, "fixture should match the AST pattern");
+        let json = serde_json::to_value(&out.0.matches[0]).unwrap();
+        assert!(json.get("column").is_none(), "sg must not invent a column");
+        assert!(json.get("byte_offset").is_none(), "sg has no byte offset");
+    }
 }

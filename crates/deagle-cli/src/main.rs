@@ -91,6 +91,13 @@ enum Commands {
         /// Filter by language (e.g., "rust", "python")
         #[arg(long)]
         lang: Option<String>,
+        /// Print the match column: `file:line:column: text`
+        #[arg(long)]
+        column: bool,
+        /// Print one JSON object per match (file_path, line_number, column,
+        /// byte_offset, line) instead of the text format
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -125,9 +132,11 @@ fn main() {
             pattern,
             paths,
             lang,
+            column,
+            json,
         } => paths
             .iter()
-            .try_for_each(|path| cmd_rg(&pattern, path, lang.as_deref())),
+            .try_for_each(|path| cmd_rg(&pattern, path, lang.as_deref(), column, json)),
     };
 
     if let Err(e) = result {
@@ -311,9 +320,7 @@ fn cmd_search(
                     });
                     match search_directory(path, query, lang_filter) {
                         Ok(matches) if !matches.is_empty() => {
-                            for m in &matches {
-                                println!("{}:{}: {}", m.file_path, m.line_number, m.line);
-                            }
+                            print_text_matches(&matches, false, false);
                             eprintln!("\n{} text match(es) in {}", matches.len(), path.display());
                         }
                         Ok(_) => eprintln!("No matches in {}", path.display()),
@@ -601,9 +608,7 @@ fn cmd_grep(pattern: &str, dir: &Path) -> Result<(), String> {
                 if matches.is_empty() {
                     eprintln!("No text matches either.");
                 } else {
-                    for m in &matches {
-                        println!("{}:{}: {}", m.file_path, m.line_number, m.line);
-                    }
+                    print_text_matches(&matches, false, false);
                     eprintln!("\n{} text match(es)", matches.len());
                 }
             }
@@ -688,7 +693,13 @@ fn grep_walk(root: &Path, _dir: &Path, pattern: &str, total: &mut usize) -> Resu
 }
 
 #[cfg(feature = "text-search")]
-fn cmd_rg(pattern: &str, path: &Path, lang: Option<&str>) -> Result<(), String> {
+fn cmd_rg(
+    pattern: &str,
+    path: &Path,
+    lang: Option<&str>,
+    column: bool,
+    json: bool,
+) -> Result<(), String> {
     use deagle_parse::text_search::{search_directory, search_file};
 
     let lang_filter = lang.map(|l| {
@@ -724,9 +735,29 @@ fn cmd_rg(pattern: &str, path: &Path, lang: Option<&str>) -> Result<(), String> 
         return Ok(());
     }
 
-    for m in &matches {
-        println!("{}:{}: {}", m.file_path, m.line_number, m.line);
-    }
+    print_text_matches(&matches, column, json);
     eprintln!("\n{} match(es)", matches.len());
     Ok(())
+}
+
+/// Print `text_search` matches.
+///
+/// The default format is `file:line: text`. `--column` adds the 1-indexed
+/// character column (`file:line:column: text`, as `rg --column` does);
+/// `--json` emits one JSON object per match so a consumer gets `column` and
+/// `byte_offset` without re-parsing the line itself.
+#[cfg(feature = "text-search")]
+fn print_text_matches(matches: &[deagle_parse::text_search::TextMatch], column: bool, json: bool) {
+    for m in matches {
+        if json {
+            match serde_json::to_string(m) {
+                Ok(line) => println!("{line}"),
+                Err(e) => eprintln!("failed to serialize match: {e}"),
+            }
+        } else if column {
+            println!("{}:{}:{}: {}", m.file_path, m.line_number, m.column, m.line);
+        } else {
+            println!("{}:{}: {}", m.file_path, m.line_number, m.line);
+        }
+    }
 }

@@ -64,6 +64,8 @@ deagle sg 'struct $S { $$$FIELDS }'   # find all structs
 
 # Regex text search (ripgrep)
 deagle rg 'TODO|FIXME' --lang rust
+deagle rg 'TODO' --column        # file:line:column: text
+deagle rg 'TODO' --json          # JSON with column + byte_offset per match
 
 # Lines of code
 deagle loc .
