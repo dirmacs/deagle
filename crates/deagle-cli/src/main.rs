@@ -73,6 +73,10 @@ enum Commands {
         /// Directory(ies) to search (default: current directory)
         #[arg(num_args = 0.., default_value = ".")]
         paths: Vec<PathBuf>,
+        /// Print the match column: `file:line:column: text` (1-indexed
+        /// characters, the same unit as `deagle rg --column`)
+        #[arg(long)]
+        column: bool,
     },
     /// Count lines of code by language (powered by tokei)
     Loc {
@@ -124,9 +128,13 @@ fn main() {
         Commands::Stats { hint_path } => cmd_stats(&cli.db, hint_path.as_deref()),
         Commands::Loc { dir } => cmd_loc(&dir),
         #[cfg(feature = "pattern")]
-        Commands::Sg { pattern, paths } => {
-            paths.iter().try_for_each(|path| cmd_grep(&pattern, path))
-        }
+        Commands::Sg {
+            pattern,
+            paths,
+            column,
+        } => paths
+            .iter()
+            .try_for_each(|path| cmd_grep(&pattern, path, column)),
         #[cfg(feature = "text-search")]
         Commands::Rg {
             pattern,
@@ -558,7 +566,7 @@ fn cmd_stats(db_path: &Path, hint_path: Option<&Path>) -> Result<(), String> {
 }
 
 #[cfg(feature = "pattern")]
-fn cmd_grep(pattern: &str, dir: &Path) -> Result<(), String> {
+fn cmd_grep(pattern: &str, dir: &Path, column: bool) -> Result<(), String> {
     if !dir.exists() {
         return Err(format!("Directory not found: {}", dir.display()));
     }
@@ -566,7 +574,7 @@ fn cmd_grep(pattern: &str, dir: &Path) -> Result<(), String> {
     eprintln!("Searching for pattern: {}", pattern);
 
     let mut total = 0;
-    grep_walk(dir, dir, pattern, &mut total)?;
+    grep_walk(dir, dir, pattern, &mut total, column)?;
 
     if total == 0 {
         // AST pattern returned nothing. Try two fallbacks:
@@ -580,7 +588,7 @@ fn cmd_grep(pattern: &str, dir: &Path) -> Result<(), String> {
                 completed
             );
             let mut total2 = 0;
-            grep_walk(dir, dir, completed, &mut total2)?;
+            grep_walk(dir, dir, completed, &mut total2, column)?;
             if total2 > 0 {
                 eprintln!(
                     "\n{} match(es) (with completed pattern '{}')",
@@ -651,7 +659,13 @@ fn suggest_pattern_completion(pattern: &str) -> Option<String> {
 }
 
 #[cfg(feature = "pattern")]
-fn grep_walk(root: &Path, _dir: &Path, pattern: &str, total: &mut usize) -> Result<(), String> {
+fn grep_walk(
+    root: &Path,
+    _dir: &Path,
+    pattern: &str,
+    total: &mut usize,
+    column: bool,
+) -> Result<(), String> {
     use deagle_parse::pattern::search_pattern;
 
     let walker = ignore::WalkBuilder::new(root)
@@ -679,12 +693,12 @@ fn grep_walk(root: &Path, _dir: &Path, pattern: &str, total: &mut usize) -> Resu
         let rel_path = path.strip_prefix(root).unwrap_or(path);
         if let Ok(matches) = search_pattern(rel_path, &content, pattern, lang) {
             for m in &matches {
-                println!(
-                    "{}:{}: {}",
-                    m.file_path,
-                    m.line_start,
-                    m.text.lines().next().unwrap_or("")
-                );
+                let text = m.text.lines().next().unwrap_or("");
+                if column {
+                    println!("{}:{}:{}: {}", m.file_path, m.line_start, m.col_start, text);
+                } else {
+                    println!("{}:{}: {}", m.file_path, m.line_start, text);
+                }
                 *total += 1;
             }
         }

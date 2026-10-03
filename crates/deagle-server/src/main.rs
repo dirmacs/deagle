@@ -219,12 +219,14 @@ struct PatternRequest {
 struct PatternMatch {
     file: String,
     line: u32,
-    /// 1-indexed character column of the match within its line. `None` for
-    /// structural (ast-grep) matches, which report no column.
+    /// 1-indexed character column of the match within its line. `None` only
+    /// when the producer does not compute one. Both `rg` and `sg` fill this in,
+    /// with the same unit — see `deagle_parse`'s `char_column`.
     #[serde(skip_serializing_if = "Option::is_none")]
     column: Option<u64>,
-    /// Byte offset of the match from the start of the file. `None` for
-    /// structural (ast-grep) matches, which report no byte offset.
+    /// Byte offset of the match from the start of the file. Filled by `rg`;
+    /// `sg` reports `None` because `pattern::PatternMatch` carries no byte
+    /// offset — `None` there means absent, not stale.
     #[serde(skip_serializing_if = "Option::is_none")]
     byte_offset: Option<u64>,
     text: String,
@@ -274,7 +276,7 @@ async fn sg(
                 matches.push(PatternMatch {
                     file: m.file_path,
                     line: m.line_start,
-                    column: None,
+                    column: Some(m.col_start as u64),
                     byte_offset: None,
                     text: m.text.lines().next().unwrap_or("").to_string(),
                 });
