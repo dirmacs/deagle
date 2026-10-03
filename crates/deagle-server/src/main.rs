@@ -157,6 +157,9 @@ struct MapRequest {
     force: Option<bool>,
 }
 
+/// `metadata` key holding the absolute root this database was indexed from.
+const INDEX_ROOT_KEY: &str = "index_root";
+
 #[derive(Serialize)]
 struct MapResponse {
     files: usize,
@@ -177,9 +180,40 @@ async fn map(
         .unwrap_or_else(|| state.root_dir.clone());
 
     let db = state.db.lock().await;
+
+    // Paths are keyed relative to the indexed root, so a second root makes the
+    // same filename collide with a different root's rows: `remove_file` deletes
+    // the other root's nodes and every later call finds the first root stale
+    // again. Refuse the mismatch rather than corrupt the index -- see #6.
+    let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+    let dir_str = dir.to_string_lossy().to_string();
+
     if req.force.unwrap_or(false) {
         db.clear()
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        db.metadata_set(INDEX_ROOT_KEY, &dir_str)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    } else {
+        match db
+            .metadata_get(INDEX_ROOT_KEY)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        {
+            Some(stored) if stored != dir_str => {
+                return Err((
+                    StatusCode::CONFLICT,
+                    format!(
+                        "this database was indexed from {stored}, not {dir_str}. \
+                         Indexing a second root corrupts the first: paths are keyed \
+                         relative to the root. Re-index the original root, or pass \
+                         {{\"force\": true}} to clear and start from {dir_str}."
+                    ),
+                ));
+            }
+            None => db
+                .metadata_set(INDEX_ROOT_KEY, &dir_str)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+            Some(_) => {}
+        }
     }
 
     let mut files = 0usize;
@@ -436,6 +470,105 @@ mod tests {
         let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
         let sr: SearchResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(sr.count, 0);
+    }
+
+    /// A second root must be refused, not silently corrupt the index. Paths are
+    /// keyed relative to the indexed root, so the same filename in two roots
+    /// collides and `remove_file` deletes the other root's nodes.
+    ///
+    /// The first case is a must-pass control: re-indexing the *same* root is the
+    /// overwhelmingly common case, and a guard that rejected it would be a guard
+    /// that rejects everything.
+    #[tokio::test]
+    async fn test_map_rejects_a_second_root() {
+        let base = std::env::temp_dir().join(format!("deagle-root-{}", std::process::id()));
+        let a = base.join("a");
+        let b = base.join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("lib.rs"), "struct OnlyInA;\n").unwrap();
+        std::fs::write(b.join("lib.rs"), "struct OnlyInB;\n").unwrap();
+
+        let db = GraphDb::in_memory().unwrap();
+        let state = Arc::new(AppState {
+            db: Mutex::new(db),
+            root_dir: a.clone(),
+        });
+        let app = Router::new()
+            .route("/api/map", post(map))
+            .route("/api/stats", get(stats))
+            .with_state(state);
+
+        let post_map = |body: String| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::post("/api/map")
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+
+        // Control: root A indexes cleanly.
+        let resp = post_map(format!(r#"{{"dir":"{}"}}"#, a.display())).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // Control: the SAME root again must also succeed. A guard that failed
+        // here would pass every rejection assertion below while being useless.
+        let resp = post_map(format!(r#"{{"dir":"{}"}}"#, a.display())).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "re-indexing the same root must not be rejected"
+        );
+
+        let before = {
+            let resp = app
+                .clone()
+                .oneshot(Request::get("/api/stats").body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+            serde_json::from_slice::<StatsResponse>(&body).unwrap()
+        };
+        // Not a hardcoded count: the exact node total depends on how many nodes
+        // the parser emits for this fixture, and pinning it would assert the
+        // parser rather than the guard. What matters is that it is non-zero and
+        // unchanged after the refusal.
+        assert!(before.nodes > 0, "root A's nodes are indexed");
+
+        // A different root must be refused loudly.
+        let resp = post_map(format!(r#"{{"dir":"{}"}}"#, b.display())).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::CONFLICT,
+            "a second root must be refused, not merged"
+        );
+
+        // And the refusal must leave the first root intact -- refusing loudly is
+        // only useful if nothing was destroyed on the way to refusing.
+        let resp = app
+            .clone()
+            .oneshot(Request::get("/api/stats").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let after: StatsResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            after.nodes, before.nodes,
+            "a refused second root must not destroy the first root's nodes"
+        );
+
+        // `force` is the documented escape hatch: it clears, so a new root is
+        // legitimate afterwards.
+        let resp = post_map(format!(r#"{{"dir":"{}","force":true}}"#, b.display())).await;
+        assert_eq!(resp.status(), StatusCode::OK, "force permits a new root");
+
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     /// `POST /api/map` must index incrementally. It used to `clear()` the whole

@@ -544,6 +544,32 @@ impl GraphDb {
         Ok(())
     }
 
+    /// Read a value from the `metadata` table.
+    ///
+    /// The table already existed with no accessors and no writer; this is the
+    /// first reader. Additive, so callers outside this crate are unaffected.
+    pub fn metadata_get(&self, key: &str) -> Result<Option<String>> {
+        let value = self
+            .conn
+            .query_row("SELECT value FROM metadata WHERE key = ?1", [key], |row| {
+                row.get::<_, String>(0)
+            })
+            .ok();
+        Ok(value)
+    }
+
+    /// Write a value to the `metadata` table.
+    ///
+    /// Note that `clear()` deliberately does not touch `metadata`: it wipes the
+    /// index, not the record of which root that index belongs to.
+    pub fn metadata_set(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO metadata (key, value) VALUES (?1, ?2)",
+            rusqlite::params![key, value],
+        )?;
+        Ok(())
+    }
+
     /// Remove nodes and edges for a specific file (for re-indexing).
     pub fn remove_file(&self, file_path: &str) -> Result<()> {
         // Get node IDs for this file
