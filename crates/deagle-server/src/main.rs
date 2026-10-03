@@ -219,6 +219,14 @@ struct PatternRequest {
 struct PatternMatch {
     file: String,
     line: u32,
+    /// 1-indexed character column of the match within its line. `None` for
+    /// structural (ast-grep) matches, which report no column.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    column: Option<u64>,
+    /// Byte offset of the match from the start of the file. `None` for
+    /// structural (ast-grep) matches, which report no byte offset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    byte_offset: Option<u64>,
     text: String,
 }
 
@@ -266,6 +274,8 @@ async fn sg(
                 matches.push(PatternMatch {
                     file: m.file_path,
                     line: m.line_start,
+                    column: None,
+                    byte_offset: None,
                     text: m.text.lines().next().unwrap_or("").to_string(),
                 });
             }
@@ -293,6 +303,8 @@ async fn rg(
         .map(|m| PatternMatch {
             file: m.file_path,
             line: m.line_number as u32,
+            column: Some(m.column),
+            byte_offset: Some(m.byte_offset),
             text: m.line,
         })
         .collect();
@@ -360,6 +372,48 @@ mod tests {
         let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
         let sr: SearchResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(sr.count, 0);
+    }
+
+    /// `POST /api/rg` must report where each match landed: a 1-indexed
+    /// character column and a byte offset that indexes the file.
+    #[tokio::test]
+    async fn test_rg_reports_column_and_byte_offset() {
+        let dir = std::env::temp_dir().join(format!("deagle-rg-api-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.rs"), "// ééé // TODO\n").unwrap();
+
+        let state = Arc::new(AppState {
+            db: Mutex::new(GraphDb::in_memory().unwrap()),
+            root_dir: dir.clone(),
+        });
+        let app = Router::new().route("/api/rg", post(rg)).with_state(state);
+
+        let resp = app
+            .oneshot(
+                Request::post("/api/rg")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"pattern":"TODO"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        let on_disk = std::fs::read(dir.join("a.rs")).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["count"], 1);
+        assert_eq!(json["matches"][0]["line"], 1);
+        // "é" is two bytes, so the character column (11) and the byte
+        // offset (13) disagree -- that is the distinction under test.
+        assert_eq!(json["matches"][0]["column"], 11);
+        let byte_offset = json["matches"][0]["byte_offset"].as_u64().unwrap();
+        assert!(
+            on_disk[byte_offset as usize..].starts_with(b"TODO"),
+            "byte_offset must index the file at the match"
+        );
+        assert_eq!(byte_offset, 13);
     }
 
     #[tokio::test]
