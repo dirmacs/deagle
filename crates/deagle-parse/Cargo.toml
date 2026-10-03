@@ -7,6 +7,8 @@ repository.workspace = true
 description = "Tree-sitter based multi-language code parser for deagle"
 
 [features]
+# No default features: a bare `deagle-parse` dependency gives tree-sitter
+# parsing only. Opt in per feature; see the crate README.
 default = []
 # Structural pattern matching via ast-grep
 pattern = ["dep:ast-grep-core", "dep:ast-grep-language"]
