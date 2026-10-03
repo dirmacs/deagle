@@ -13,7 +13,7 @@ HTTP API + MCP server for [deagle](https://github.com/dirmacs/deagle) code intel
 GET  /health              Health check
 GET  /api/search?q=NAME   Search entities
 GET  /api/stats            Graph statistics
-POST /api/map              Index a directory
+POST /api/map              Index a directory into a graph (returns files, entities, edges)
 POST /api/sg               Structural AST search
 POST /api/rg               Regex text search
 ```
