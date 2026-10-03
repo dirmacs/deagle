@@ -162,12 +162,39 @@ fn cmd_map(db_path: &Path, dir: &Path, force: bool) -> Result<(), String> {
 
     let db = GraphDb::open(db_path).map_err(|e| format!("Failed to open db: {}", e))?;
 
+    // Paths are keyed relative to the indexed root, so a second root makes the
+    // same filename collide with a different root's rows: `remove_file` deletes
+    // the other root's nodes and every later call finds the first root stale
+    // again. Refuse the mismatch rather than corrupt the index -- see #6.
+    let root = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let dir_str = root.to_string_lossy().to_string();
+
     if force {
         db.clear()
             .map_err(|e| format!("Failed to clear db: {}", e))?;
-        eprintln!("Full re-index of {}...", dir.display());
+        db.metadata_set(deagle_core::INDEX_ROOT_KEY, &dir_str)
+            .map_err(|e| format!("Failed to record index root: {}", e))?;
+        eprintln!("Full re-index of {}...", dir_str);
     } else {
-        eprintln!("Incremental index of {}...", dir.display());
+        match db
+            .metadata_get(deagle_core::INDEX_ROOT_KEY)
+            .map_err(|e| format!("Failed to read index root: {}", e))?
+        {
+            Some(stored) if stored != dir_str => {
+                return Err(format!(
+                    "this database was indexed from {}, not {}.\n\
+                     Indexing a second root corrupts the first: paths are keyed \
+                     relative to the root.\nRe-index the original root, or pass \
+                     --force to clear and start from {}.",
+                    stored, dir_str, dir_str
+                ));
+            }
+            None => db
+                .metadata_set(deagle_core::INDEX_ROOT_KEY, &dir_str)
+                .map_err(|e| format!("Failed to record index root: {}", e))?,
+            Some(_) => {}
+        }
+        eprintln!("Incremental index of {}...", dir_str);
     }
 
     // Collect file paths first (ignore-aware)
@@ -773,5 +800,66 @@ fn print_text_matches(matches: &[deagle_parse::text_search::TextMatch], column: 
         } else {
             println!("{}:{}: {}", m.file_path, m.line_number, m.line);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use deagle_core::GraphDb;
+
+    /// A second root must be refused, not silently corrupt the index. Paths are
+    /// keyed relative to the indexed root, so the same filename in two roots
+    /// collides and `remove_file` deletes the other root's nodes.
+    ///
+    /// Re-indexing the *same* root is the must-pass control: without it, a guard
+    /// that rejected everything would pass every rejection assertion while being
+    /// useless.
+    #[test]
+    fn map_refuses_a_second_root() {
+        let base = std::env::temp_dir().join(format!("deagle-cli-root-{}", std::process::id()));
+        let a = base.join("a");
+        let b = base.join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("lib.rs"), "struct OnlyInA;\n").unwrap();
+        std::fs::write(b.join("lib.rs"), "struct OnlyInB;\n").unwrap();
+        let db_path = base.join("db/graph.db");
+
+        // Control: the first root indexes cleanly.
+        cmd_map(&db_path, &a, false).expect("first root must index");
+
+        // Control: the SAME root again must succeed.
+        cmd_map(&db_path, &a, false).expect("re-indexing the same root must not be refused");
+
+        let nodes_after_a = {
+            let db = GraphDb::open(&db_path).unwrap();
+            db.node_count().unwrap()
+        };
+        assert!(nodes_after_a > 0, "root A's nodes are indexed");
+
+        // A different root must be refused.
+        let err = cmd_map(&db_path, &b, false).expect_err("a second root must be refused");
+        assert!(
+            err.contains(&a.canonicalize().unwrap().to_string_lossy().to_string()),
+            "the error must name the root already indexed, got: {err}"
+        );
+        assert!(
+            err.contains("--force"),
+            "the error must name the escape, got: {err}"
+        );
+
+        // And the refusal must leave the first root intact.
+        let db = GraphDb::open(&db_path).unwrap();
+        assert_eq!(
+            db.node_count().unwrap(),
+            nodes_after_a,
+            "a refused second root must not destroy the first root's nodes"
+        );
+
+        // `--force` is the documented escape: it clears, so a new root is fine.
+        cmd_map(&db_path, &b, true).expect("--force permits a new root");
+
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }
