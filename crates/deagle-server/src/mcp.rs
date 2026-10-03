@@ -88,12 +88,14 @@ struct MapOutput {
 struct GrepMatch {
     file: String,
     line: u32,
-    /// 1-indexed character column of the match within its line. Absent for
-    /// structural (ast-grep) matches, which report no column.
+    /// 1-indexed character column of the match within its line. Absent only
+    /// when the producer does not compute one. Both `deagle_rg` and `deagle_sg`
+    /// fill this in, with the same unit.
     #[serde(skip_serializing_if = "Option::is_none")]
     column: Option<u64>,
-    /// Byte offset of the match from the start of the file. Absent for
-    /// structural (ast-grep) matches, which report no byte offset.
+    /// Byte offset of the match from the start of the file. Filled by
+    /// `deagle_rg`; `deagle_sg` omits it because `pattern::PatternMatch`
+    /// carries no byte offset — absent there means not carried, not stale.
     #[serde(skip_serializing_if = "Option::is_none")]
     byte_offset: Option<u64>,
     text: String,
@@ -329,7 +331,7 @@ impl DeagleMcp {
                     matches.push(GrepMatch {
                         file: m.file_path,
                         line: m.line_start,
-                        column: None,
+                        column: Some(m.col_start as u64),
                         byte_offset: None,
                         text: m.text.lines().next().unwrap_or("").to_string(),
                     });
@@ -443,10 +445,10 @@ mod tests {
         );
     }
 
-    /// Structural search has no column to report, so it must omit the field
-    /// rather than claim column 0.
+    /// Structural search now reports the same 1-indexed character column as
+    /// `rg`, and still omits `byte_offset`, which it genuinely does not carry.
     #[test]
-    fn sg_omits_column_and_byte_offset() {
+    fn sg_reports_column_and_omits_byte_offset() {
         let dir = std::env::temp_dir().join(format!("deagle-sg-mcp-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
@@ -463,8 +465,18 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
 
         assert!(out.0.count > 0, "fixture should match the AST pattern");
-        let json = serde_json::to_value(&out.0.matches[0]).unwrap();
-        assert!(json.get("column").is_none(), "sg must not invent a column");
-        assert!(json.get("byte_offset").is_none(), "sg has no byte offset");
+        let m = &out.0.matches[0];
+        let json = serde_json::to_value(m).unwrap();
+
+        // The match node is `Some(1).unwrap()`; derive the expected 1-indexed
+        // character column from the fixture rather than hand-counting it.
+        let line = "fn main() { let x = Some(1).unwrap(); }";
+        let expected = line.find("Some(1)").unwrap() as u64 + 1;
+        assert_eq!(m.column, Some(expected), "sg must report a measured column");
+        assert_eq!(json["column"], expected);
+        assert!(
+            json.get("byte_offset").is_none(),
+            "pattern::PatternMatch carries no byte offset; omitting is honest"
+        );
     }
 }

@@ -5,6 +5,7 @@
 //!
 //! Requires the `text-search` feature flag.
 
+use crate::char_column;
 use deagle_core::{Language, Result};
 use grep_matcher::Matcher;
 use grep_regex::RegexMatcher;
@@ -201,18 +202,6 @@ impl Sink for TextMatchSink<'_> {
 fn trim_terminator(line: &[u8]) -> &[u8] {
     let body = line.strip_suffix(b"\n").unwrap_or(line);
     body.strip_suffix(b"\r").unwrap_or(body)
-}
-
-/// 1-indexed character column of `byte_offset` within `line`.
-///
-/// `byte_offset` is a byte index, so it is floored to a char boundary first:
-/// a regex match always starts on one, but flooring keeps this total.
-fn char_column(line: &str, byte_index: usize) -> u64 {
-    let mut at = byte_index.min(line.len());
-    while at > 0 && !line.is_char_boundary(at) {
-        at -= 1;
-    }
-    line[..at].chars().count() as u64 + 1
 }
 
 #[cfg(test)]

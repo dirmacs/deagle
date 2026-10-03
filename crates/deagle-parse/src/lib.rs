@@ -41,6 +41,23 @@ use std::path::Path;
 
 pub use rust_parser::ParseResult;
 
+/// 1-indexed **character** column of `byte_index` within `line`.
+///
+/// This is the crate's single definition of a column, shared by
+/// `text_search::TextMatch::column` and `pattern::PatternMatch::col_start` so the
+/// two surfaces cannot drift apart. Counted in characters, not bytes: a match at
+/// the start of a line is column 1.
+///
+/// `byte_index` is a byte offset and is floored to a char boundary first — a
+/// match always starts on one, but flooring keeps this total.
+pub(crate) fn char_column(line: &str, byte_index: usize) -> u64 {
+    let mut at = byte_index.min(line.len());
+    while at > 0 && !line.is_char_boundary(at) {
+        at -= 1;
+    }
+    line[..at].chars().count() as u64 + 1
+}
+
 /// Truncate a string to at most `max_bytes`, respecting UTF-8 char boundaries.
 pub(crate) fn truncate_content(s: &str, max_bytes: usize) -> String {
     if s.len() <= max_bytes {
