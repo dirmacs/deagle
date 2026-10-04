@@ -213,6 +213,17 @@ pub struct GraphDb {
 }
 
 #[cfg(feature = "sqlite")]
+/// Join a recorded root and a path relative to it into one unambiguous key.
+///
+/// Kept as a free function so the migration and the read path cannot drift:
+/// both go through this.
+fn join_key(root: &str, file_path: &str) -> String {
+    std::path::Path::new(root)
+        .join(file_path)
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// `metadata` key holding the absolute root a database was indexed from.
 ///
 /// Paths in the index are keyed relative to that root, so a database is only
@@ -250,6 +261,7 @@ impl GraphDb {
                 kind TEXT NOT NULL,
                 language TEXT NOT NULL,
                 file_path TEXT NOT NULL,
+                file_key TEXT,
                 line_start INTEGER NOT NULL,
                 line_end INTEGER NOT NULL,
                 content TEXT
@@ -287,19 +299,68 @@ impl GraphDb {
             );
             ",
         )?;
+        self.migrate_file_key()?;
+        Ok(())
+    }
+
+    /// Add `file_key` to databases created before it existed, and backfill it.
+    ///
+    /// The backfill is not optional. `remove_file` selects on `file_key`, so a
+    /// NULL there would make it silently stop matching pre-existing rows -- a
+    /// quiet corruption bug replacing a loud one. Backfilling leaves one
+    /// consistent state; a NULL-matching predicate would leave a second code
+    /// path that every future query has to remember.
+    fn migrate_file_key(&self) -> Result<()> {
+        let has_column = self.conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('nodes') WHERE name = 'file_key'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )? > 0;
+        if !has_column {
+            self.conn
+                .execute("ALTER TABLE nodes ADD COLUMN file_key TEXT", [])?;
+        }
+
+        let root = self.metadata_get(INDEX_ROOT_KEY).unwrap_or(None);
+        let Some(root) = root else {
+            // No root recorded: the key is the path itself, which is exactly
+            // what these rows already hold.
+            self.conn.execute(
+                "UPDATE nodes SET file_key = file_path WHERE file_key IS NULL",
+                [],
+            )?;
+            return Ok(());
+        };
+
+        let stale: Vec<(i64, String)> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id, file_path FROM nodes WHERE file_key IS NULL")?;
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        for (id, file_path) in stale {
+            let key = join_key(&root, &file_path);
+            self.conn.execute(
+                "UPDATE nodes SET file_key = ?1 WHERE id = ?2",
+                rusqlite::params![key, id],
+            )?;
+        }
         Ok(())
     }
 
     /// Insert a node and return its ID.
     pub fn insert_node(&self, node: &Node) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO nodes (name, kind, language, file_path, line_start, line_end, content)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO nodes (name, kind, language, file_path, file_key, line_start, line_end, content)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             rusqlite::params![
                 node.name,
                 node.kind.to_string(),
                 node.language.to_string(),
                 node.file_path,
+                self.file_key(&node.file_path),
                 node.line_start,
                 node.line_end,
                 node.content,
@@ -321,8 +382,8 @@ impl GraphDb {
 
         {
             let mut node_stmt = tx.prepare_cached(
-                "INSERT INTO nodes (name, kind, language, file_path, line_start, line_end, content)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO nodes (name, kind, language, file_path, file_key, line_start, line_end, content)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )?;
             let mut fts_stmt = tx.prepare_cached(
                 "INSERT INTO nodes_fts(rowid, name, content, file_path) VALUES (?1, ?2, ?3, ?4)",
@@ -334,6 +395,7 @@ impl GraphDb {
                     node.kind.to_string(),
                     node.language.to_string(),
                     node.file_path,
+                    self.file_key(&node.file_path),
                     node.line_start,
                     node.line_end,
                     node.content,
@@ -533,7 +595,7 @@ impl GraphDb {
             .conn
             .query_row(
                 "SELECT content_hash FROM file_hashes WHERE file_path = ?1",
-                [file_path],
+                [self.file_key(file_path)],
                 |row| row.get(0),
             )
             .ok();
@@ -546,9 +608,21 @@ impl GraphDb {
         let hash = Self::content_hash(content);
         self.conn.execute(
             "INSERT OR REPLACE INTO file_hashes (file_path, content_hash) VALUES (?1, ?2)",
-            rusqlite::params![file_path, hash],
+            rusqlite::params![self.file_key(file_path), hash],
         )?;
         Ok(())
+    }
+
+    /// The root-qualified key for a file, used for all index bookkeeping.
+    ///
+    /// Returns the path unchanged when no root is recorded, which is the
+    /// behaviour of every caller before roots were tracked. Purely arithmetic:
+    /// no filesystem I/O, so it cannot fail on a file that has since moved.
+    pub fn file_key(&self, file_path: &str) -> String {
+        match self.metadata_get(INDEX_ROOT_KEY).unwrap_or(None) {
+            Some(root) => join_key(&root, file_path),
+            None => file_path.to_string(),
+        }
     }
 
     /// Read a value from the `metadata` table.
@@ -579,12 +653,17 @@ impl GraphDb {
 
     /// Remove nodes and edges for a specific file (for re-indexing).
     pub fn remove_file(&self, file_path: &str) -> Result<()> {
+        // Resolve the root-qualified key once and use it for every statement
+        // below. Using the relative path in the DELETEs after selecting on the
+        // key would match every root that happens to share the filename.
+        let key = self.file_key(file_path);
+
         // Get node IDs for this file
         let mut stmt = self
             .conn
-            .prepare("SELECT id FROM nodes WHERE file_path = ?1")?;
+            .prepare("SELECT id FROM nodes WHERE file_key = ?1")?;
         let ids: Vec<i64> = stmt
-            .query_map([file_path], |row| row.get(0))?
+            .query_map([&key], |row| row.get(0))?
             .filter_map(|r| r.ok())
             .collect();
 
@@ -593,18 +672,224 @@ impl GraphDb {
             self.conn
                 .execute("DELETE FROM edges WHERE from_id = ?1 OR to_id = ?1", [id])?;
         }
-        // Delete nodes
+        // Delete nodes and hash, both keyed the same way as the select above.
         self.conn
-            .execute("DELETE FROM nodes WHERE file_path = ?1", [file_path])?;
-        // Delete hash
+            .execute("DELETE FROM nodes WHERE file_key = ?1", [&key])?;
         self.conn
-            .execute("DELETE FROM file_hashes WHERE file_path = ?1", [file_path])?;
+            .execute("DELETE FROM file_hashes WHERE file_path = ?1", [&key])?;
         Ok(())
     }
 }
 
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
+    /// A database with no recorded root must still migrate, using the path as
+    /// its own key. This is the real shape of a pre-existing CLI database: it
+    /// predates root tracking entirely, so the fallback branch is the one that
+    /// most existing databases will take.
+    #[test]
+    fn migration_without_a_recorded_root_uses_the_path_itself() {
+        let dir = std::env::temp_dir().join(format!("deagle-noroot-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("graph.db");
+
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute(
+                "CREATE TABLE nodes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL, kind TEXT NOT NULL, language TEXT NOT NULL,
+                    file_path TEXT NOT NULL, line_start INTEGER NOT NULL,
+                    line_end INTEGER NOT NULL, content TEXT
+                )",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO nodes (name, kind, language, file_path, line_start, line_end)
+                 VALUES ('Legacy', 'function', 'rust', 'src/lib.rs', 1, 1)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                [],
+            )
+            .unwrap();
+            // Deliberately no INDEX_ROOT_KEY row.
+        }
+
+        let db = GraphDb::open(&path).unwrap();
+        let file_key: String = db
+            .conn
+            .query_row(
+                "SELECT file_key FROM nodes WHERE name = 'Legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            file_key, "src/lib.rs",
+            "with no root, the key must fall back to the path itself"
+        );
+        db.remove_file("src/lib.rs").unwrap();
+        assert_eq!(db.node_count().unwrap(), 0, "and stay removable");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Two roots sharing one database must not collide. Paths are relative, so
+    /// without a root-qualified key two roots containing the same filename
+    /// overwrite each other's bookkeeping and delete each other's nodes.
+    #[test]
+    fn two_roots_in_one_database_do_not_collide() {
+        let db = GraphDb::in_memory().unwrap();
+        let node = |name: &str| Node {
+            id: 0,
+            name: name.into(),
+            kind: NodeKind::Function,
+            language: Language::Rust,
+            file_path: "lib.rs".into(),
+            line_start: 1,
+            line_end: 1,
+            content: None,
+        };
+
+        // Root A indexes its own lib.rs.
+        db.metadata_set(INDEX_ROOT_KEY, "/tmp/x/a").unwrap();
+        db.insert_node(&node("OnlyInA")).unwrap();
+        db.store_file_hash("lib.rs", "struct OnlyInA;").unwrap();
+
+        // Root B, pointed at the SAME database, indexes its own lib.rs.
+        db.metadata_set(INDEX_ROOT_KEY, "/tmp/x/b").unwrap();
+        db.insert_node(&node("OnlyInB")).unwrap();
+        db.store_file_hash("lib.rs", "struct OnlyInB;").unwrap();
+
+        assert_eq!(
+            db.node_count().unwrap(),
+            2,
+            "both roots' nodes must coexist"
+        );
+
+        // Under root B, B's own content is current and A's is not -- both are
+        // correct, because each root has its own key.
+        assert!(
+            !db.needs_reindex("lib.rs", "struct OnlyInB;").unwrap(),
+            "root B's content is the one just stored"
+        );
+
+        // The control that actually distinguishes this from the old behaviour:
+        // switching back to root A, A's own content must still be recorded as
+        // current. Before the root-qualified key both roots shared one row, so
+        // B's hash overwrote A's and A was permanently stale.
+        db.metadata_set(INDEX_ROOT_KEY, "/tmp/x/a").unwrap();
+        assert!(
+            !db.needs_reindex("lib.rs", "struct OnlyInA;").unwrap(),
+            "root A's own content must still be recorded as current under its own key"
+        );
+
+        // Replacing B's file must leave A's nodes alone.
+        db.metadata_set(INDEX_ROOT_KEY, "/tmp/x/b").unwrap();
+        db.remove_file("lib.rs").unwrap();
+        let remaining: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            remaining, 1,
+            "remove_file under root B must delete only B's node"
+        );
+        let survivor: String = db
+            .conn
+            .query_row("SELECT name FROM nodes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(survivor, "OnlyInA", "the survivor must be root A's node");
+    }
+
+    /// A database created before `file_key` existed must be migrated, not
+    /// silently left with NULL keys -- `remove_file` selects on that column, so
+    /// a NULL there would make it stop matching pre-existing rows.
+    #[test]
+    fn migration_backfills_file_key_on_an_existing_database() {
+        let dir = std::env::temp_dir().join(format!("deagle-migrate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("graph.db");
+
+        // Recreate the pre-migration schema by hand: the old `nodes` table with
+        // no file_key, and a row in it.
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute(
+                "CREATE TABLE nodes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    language TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    line_start INTEGER NOT NULL,
+                    line_end INTEGER NOT NULL,
+                    content TEXT
+                )",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO nodes (name, kind, language, file_path, line_start, line_end)
+                 VALUES ('Legacy', 'function', 'rust', 'src/lib.rs', 1, 1)",
+                [],
+            )
+            .unwrap();
+            // `metadata` predates this work -- it existed with no accessors --
+            // so a genuine legacy database already has it.
+            conn.execute(
+                "CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO metadata (key, value) VALUES (?1, '/tmp/legacy-root')",
+                rusqlite::params![INDEX_ROOT_KEY],
+            )
+            .unwrap();
+        }
+
+        // Opening it runs the schema batch and the migration.
+        let db = GraphDb::open(&path).unwrap();
+        let file_key: String = db
+            .conn
+            .query_row(
+                "SELECT file_key FROM nodes WHERE name = 'Legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            file_key, "/tmp/legacy-root/src/lib.rs",
+            "the pre-existing row must be backfilled with its root-qualified key"
+        );
+
+        // And it must now be reachable through the normal path, which is the
+        // whole point: a NULL file_key would have made remove_file a no-op and
+        // left the row stranded forever.
+        assert!(
+            db.needs_reindex("src/lib.rs", "anything").unwrap(),
+            "the legacy database stored no hash, so it is stale"
+        );
+        db.store_file_hash("src/lib.rs", "anything").unwrap();
+        assert!(
+            !db.needs_reindex("src/lib.rs", "anything").unwrap(),
+            "storing the hash must make it current"
+        );
+        db.remove_file("src/lib.rs").unwrap();
+        assert_eq!(
+            db.node_count().unwrap(),
+            0,
+            "a migrated row must still be removable through file_key"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     use super::*;
 
     #[test]
