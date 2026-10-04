@@ -7,7 +7,7 @@
 
 use deagle_core::{GraphDb, Language};
 use rmcp::{
-    ServerHandler, ServiceExt,
+    ErrorData, ServerHandler, ServiceExt,
     handler::server::{wrapper::Json as McpJson, wrapper::Parameters},
     model::{Implementation, ServerCapabilities},
     schemars, tool, tool_handler, tool_router,
@@ -19,6 +19,11 @@ use std::sync::Mutex;
 struct DeagleMcp {
     db: Mutex<GraphDb>,
     root_dir: PathBuf,
+}
+
+/// Database failures are the server's fault, not the caller's parameters.
+fn db_err(message: impl Into<String>) -> ErrorData {
+    ErrorData::internal_error(message.into(), None)
 }
 
 // --- Parameter types ---
@@ -35,6 +40,10 @@ struct SearchParams {
 struct MapParams {
     /// Directory to index (defaults to root_dir)
     dir: Option<String>,
+    /// Clear the graph before indexing. Defaults to false, matching `deagle map`
+    /// (which clears only under --force) and POST /api/map (which clears only
+    /// under {"force": true}).
+    force: Option<bool>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -219,16 +228,55 @@ impl DeagleMcp {
 
     #[tool(
         name = "deagle_map",
-        description = "Index a codebase directory into the graph database. Parses source files (Rust, Python) and extracts entities and relationships. Replaces any existing index."
+        description = "Index a codebase directory into the graph database. Parses source files (Rust, Python) and extracts entities and relationships. Incremental: unchanged files are skipped and changed files are re-indexed in place. Pass force to clear the graph and rebuild from scratch."
     )]
-    fn map(&self, Parameters(params): Parameters<MapParams>) -> McpJson<MapOutput> {
+    fn map(
+        &self,
+        Parameters(params): Parameters<MapParams>,
+    ) -> Result<McpJson<MapOutput>, ErrorData> {
         let dir = params
             .dir
             .map(PathBuf::from)
             .unwrap_or_else(|| self.root_dir.clone());
 
-        let db = self.db.lock().unwrap();
-        let _ = db.clear();
+        let db = self
+            .db
+            .lock()
+            .map_err(|_| db_err("database lock poisoned"))?;
+        let dir = std::fs::canonicalize(&dir).unwrap_or(dir);
+        let dir_str = dir.to_string_lossy().to_string();
+
+        // Paths are keyed relative to the indexed root, so a second root makes
+        // the same filename collide with a different root's rows. Now that this
+        // tool accumulates rather than clearing, the guard is required, not
+        // optional -- see #6.
+        if params.force.unwrap_or(false) {
+            db.clear()
+                .map_err(|e| db_err(format!("failed to clear: {e}")))?;
+            db.metadata_set(deagle_core::INDEX_ROOT_KEY, &dir_str)
+                .map_err(|e| db_err(format!("failed to record index root: {e}")))?;
+        } else {
+            match db
+                .metadata_get(deagle_core::INDEX_ROOT_KEY)
+                .map_err(|e| db_err(format!("failed to read index root: {e}")))?
+            {
+                Some(stored) if stored != dir_str => {
+                    return Err(ErrorData::invalid_params(
+                        format!(
+                            "this database was indexed from {stored}, not {dir_str}. \
+                             Indexing a second root corrupts the first: paths are keyed \
+                             relative to the root. Re-index the original root, or pass \
+                             force to clear and start from {dir_str}."
+                        ),
+                        None,
+                    ));
+                }
+                None => db
+                    .metadata_set(deagle_core::INDEX_ROOT_KEY, &dir_str)
+                    .map_err(|e| db_err(format!("failed to record index root: {e}")))?,
+                Some(_) => {}
+            }
+        }
 
         let files: Vec<_> = ignore::WalkBuilder::new(&dir)
             .hidden(true)
@@ -255,42 +303,63 @@ impl DeagleMcp {
                 _ => continue,
             };
             let rel = path.strip_prefix(&dir).unwrap_or(path);
-            if let Ok(result) = deagle_parse::parse_file_with_edges(rel, &content, lang) {
-                if result.nodes.is_empty() {
-                    continue;
-                }
-                file_count += 1;
-                let mut db_ids = Vec::new();
-                for node in &result.nodes {
-                    match db.insert_node(node) {
-                        Ok(id) => db_ids.push(id),
-                        Err(_) => db_ids.push(-1),
+            let rel_str = rel.to_string_lossy().to_string();
+
+            // Skip unchanged files. Without the stored hashes there is nothing to
+            // compare against, which is why this used to re-parse everything.
+            match db.needs_reindex(&rel_str, &content) {
+                Ok(false) => continue,
+                Ok(true) => {}
+                Err(e) => return Err(db_err(format!("failed to read index state: {e}"))),
+            }
+
+            let Ok(result) = deagle_parse::parse_file_with_edges(rel, &content, lang) else {
+                continue;
+            };
+            if result.nodes.is_empty() {
+                continue;
+            }
+
+            // Replace this file's rows rather than adding alongside them. Skip
+            // above and replace here must both be present.
+            db.remove_file(&rel_str)
+                .map_err(|e| db_err(format!("failed to replace {}: {e}", rel_str)))?;
+
+            // One transaction per file, as the HTTP handler does, so a failure
+            // cannot leave a half-written file behind a success.
+            let db_ids = db
+                .insert_batch(&result.nodes, &[])
+                .map_err(|e| db_err(format!("failed to index {}: {e}", rel_str)))?;
+
+            for (from_idx, to_idx, kind) in &result.edges {
+                match (db_ids.get(*from_idx), db_ids.get(*to_idx)) {
+                    (Some(&from_id), Some(&to_id)) if from_id > 0 && to_id > 0 => {
+                        db.insert_edge(&deagle_core::Edge {
+                            from_id,
+                            to_id,
+                            kind: *kind,
+                            // Every edge a parser emits is structural containment.
+                            confidence: 1.0,
+                        })
+                        .map_err(|e| db_err(format!("failed to add edge: {e}")))?;
+                        edge_count += 1;
                     }
-                }
-                node_count += result.nodes.len();
-                for &(from_idx, to_idx, ref kind) in &result.edges {
-                    if from_idx < db_ids.len() && to_idx < db_ids.len() {
-                        let from_id = db_ids[from_idx];
-                        let to_id = db_ids[to_idx];
-                        if from_id > 0 && to_id > 0 {
-                            let _ = db.insert_edge(&deagle_core::Edge {
-                                from_id,
-                                to_id,
-                                kind: *kind,
-                                confidence: 1.0,
-                            });
-                            edge_count += 1;
-                        }
-                    }
+                    _ => {}
                 }
             }
+
+            db.store_file_hash(&rel_str, &content)
+                .map_err(|e| db_err(format!("failed to record hash: {e}")))?;
+
+            file_count += 1;
+            node_count += result.nodes.len();
         }
 
-        McpJson(MapOutput {
+        Ok(McpJson(MapOutput {
             files: file_count,
             entities: node_count,
             edges: edge_count,
-        })
+        }))
     }
 
     #[tool(
@@ -416,6 +485,172 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `deagle_map` must index incrementally. It used to clear the graph and
+    /// re-parse the entire tree on every call, which it advertised as
+    /// "Replaces any existing index".
+    #[test]
+    fn map_indexes_incrementally() {
+        let dir = std::env::temp_dir().join(format!("deagle-map-mcp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("lib.rs");
+        std::fs::write(&file, "struct Config;\n\nfn helper() -> i32 { 42 }\n").unwrap();
+
+        let mcp = DeagleMcp::new(GraphDb::in_memory().unwrap(), dir.clone());
+        let map = |m: &DeagleMcp| {
+            m.map(Parameters(MapParams {
+                dir: Some(dir.to_string_lossy().into_owned()),
+                force: None,
+            }))
+            .expect("indexing must succeed")
+        };
+
+        let first = map(&mcp);
+        assert_eq!(first.0.files, 1, "the first call indexes the file");
+        let entities = first.0.entities;
+        assert!(entities > 0);
+
+        // Unchanged: must be skipped, not re-indexed.
+        let second = map(&mcp);
+        assert_eq!(
+            second.0.files, 0,
+            "an unchanged file must be skipped, not re-indexed"
+        );
+
+        // The graph must not have grown.
+        let db = mcp.db.lock().unwrap();
+        assert_eq!(db.node_count().unwrap(), entities);
+
+        drop(db);
+        // Changed: re-indexed, and its rows replaced rather than joined.
+        std::fs::write(
+            &file,
+            "struct Config;\n\nfn helper() -> i32 { 42 }\n\nfn extra() -> u8 { 7 }\n",
+        )
+        .unwrap();
+        let third = map(&mcp);
+        assert_eq!(third.0.files, 1, "the changed file is re-indexed");
+        assert!(third.0.entities > entities);
+        let db = mcp.db.lock().unwrap();
+        assert_eq!(
+            db.node_count().unwrap(),
+            third.0.entities,
+            "re-indexing must replace the file's rows, not duplicate them"
+        );
+        drop(db);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A failed `clear()` must be reported, not swallowed. The original handler
+    /// wrote `let _ = db.clear();`, so a clear that failed left the old index in
+    /// place and the tool still reported success -- a silent wrong answer.
+    ///
+    /// The fault is injected by making the database file read-only, which is the
+    /// only way to make `clear()` fail without reaching into `GraphDb`'s private
+    /// connection or mocking the type.
+    #[test]
+    fn map_reports_a_failed_clear() {
+        let base = std::env::temp_dir().join(format!("deagle-mapclear-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let dir = base.join("src");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("lib.rs"), "struct Config;\n").unwrap();
+        let db_path = base.join("graph.db");
+
+        let map_on = |force: Option<bool>| {
+            let db = GraphDb::open(&db_path).unwrap();
+            let mcp = DeagleMcp::new(db, dir.clone());
+            mcp.map(Parameters(MapParams {
+                dir: Some(dir.to_string_lossy().into_owned()),
+                force,
+            }))
+        };
+
+        map_on(Some(true)).expect("a healthy database clears");
+
+        // Reopen read-only: every write now fails, and `clear()` is the first.
+        {
+            let db = GraphDb::open(&db_path).unwrap();
+            drop(db);
+            let mut perms = std::fs::metadata(&db_path).unwrap().permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(true);
+            std::fs::set_permissions(&db_path, perms).unwrap();
+        }
+
+        let result = map_on(Some(true));
+        // Restore permissions before asserting, so a panic cannot leave a
+        // read-only file behind for the next run to trip over.
+        let mut perms = std::fs::metadata(&db_path).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&db_path, perms).unwrap();
+
+        let message = match result {
+            Ok(_) => panic!("a failed clear must be an error, not a successful index"),
+            Err(e) => e.message.to_string(),
+        };
+        // The message is what isolates this to `clear()`: the inserts that follow
+        // would also fail on a read-only database, so without this the test
+        // would pass for the wrong reason.
+        assert!(
+            message.contains("clear"),
+            "the error must say that clearing failed, got: {message}"
+        );
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// `deagle_map` must refuse a second root. Now that it accumulates, indexing
+    /// a different root would collide on every relative path.
+    #[test]
+    fn map_refuses_a_second_root() {
+        let base = std::env::temp_dir().join(format!("deagle-maproot-{}", std::process::id()));
+        let a = base.join("a");
+        let b = base.join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        std::fs::write(a.join("lib.rs"), "struct OnlyInA;\n").unwrap();
+        std::fs::write(b.join("lib.rs"), "struct OnlyInB;\n").unwrap();
+
+        let mcp = DeagleMcp::new(GraphDb::in_memory().unwrap(), a.clone());
+        let index = |dir: &Path, force: Option<bool>| {
+            mcp.map(Parameters(MapParams {
+                dir: Some(dir.to_string_lossy().into_owned()),
+                force,
+            }))
+        };
+
+        index(&a, None).expect("the first root must index");
+        // Control: the SAME root again must succeed, or a guard that refused
+        // everything would pass every rejection assertion below while useless.
+        index(&a, None).expect("re-indexing the same root must not be refused");
+
+        let before = mcp.db.lock().unwrap().node_count().unwrap();
+        assert!(before > 0);
+
+        // A different root must fail loudly rather than corrupt the index.
+        // `expect_err` would need `T: Debug`, and `rmcp::Json` is not Debug.
+        let err = match index(&b, None) {
+            Ok(_) => panic!("a second root must be refused"),
+            Err(e) => e,
+        };
+        let message = err.message.to_string();
+        assert!(
+            message.contains(&a.canonicalize().unwrap().to_string_lossy().to_string()),
+            "the error must name the root already indexed, got: {message}"
+        );
+        assert!(
+            mcp.db.lock().unwrap().node_count().unwrap() == before,
+            "a refused second root must not destroy the first root's nodes"
+        );
+
+        // `force` is the documented escape: it clears, so a new root is fine.
+        index(&b, Some(true)).expect("force permits a new root");
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 
     /// The `deagle_rg` tool must report where each match landed: a 1-indexed
     /// character column, and a byte offset that indexes the file.
