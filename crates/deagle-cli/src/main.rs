@@ -321,6 +321,57 @@ fn cmd_map(db_path: &Path, dir: &Path, force: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Name the index a query is about to answer from.
+///
+/// The graph is resolved at a path relative to the current directory, so which
+/// database answers a query depends on where the caller is standing, not on
+/// what they asked for. Every row is well-formed either way -- locations are
+/// repo-relative -- so an answer from a different project's database is
+/// indistinguishable from an answer from the right one. Naming the indexed root
+/// is what makes that readable: the caller compares it against their own
+/// directory without leaving the terminal.
+///
+/// A signal, not a refusal. Querying an index from another directory is
+/// legitimate, so a mismatch is a fact to report rather than a reason to fail.
+///
+/// The age is the database file's own modification time, which is the only
+/// timestamp every database already on disk has -- a recorded build timestamp
+/// would be absent for all of them until they were rebuilt. A database that was
+/// copied or restored therefore carries the copy's time, so this is described
+/// as the file's age and not as the index's.
+fn describe_index(db: &GraphDb, db_path: &Path) -> String {
+    let root = db
+        .metadata_get(deagle_core::INDEX_ROOT_KEY)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "<no root recorded>".to_string());
+    match std::fs::metadata(db_path).and_then(|m| m.modified()) {
+        Ok(modified) => match modified.elapsed() {
+            Ok(age) => format!(
+                "index root: {root}  (database last modified {})",
+                human_age(age)
+            ),
+            Err(_) => format!("index root: {root}"),
+        },
+        Err(_) => format!("index root: {root}"),
+    }
+}
+
+/// A coarse age, not a date. Nothing here needs a calendar, and the only
+/// timestamp available is a file's, so "how long ago" is the honest unit.
+fn human_age(age: std::time::Duration) -> String {
+    let secs = age.as_secs();
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3_600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h ago", secs / 3_600)
+    } else {
+        format!("{}d ago", secs / 86_400)
+    }
+}
+
 fn cmd_search(
     db_path: &Path,
     query: &str,
@@ -379,6 +430,8 @@ fn cmd_search(
     }
 
     let db = GraphDb::open(db_path).map_err(|e| format!("Failed to open db: {}", e))?;
+    // Say which database is answering before the rows that depend on it.
+    eprintln!("{}", describe_index(&db, db_path));
     let results = if fuzzy {
         db.fuzzy_search_nodes(query)
             .map_err(|e| format!("Search failed: {}", e))?
@@ -587,6 +640,7 @@ fn cmd_stats(db_path: &Path, hint_path: Option<&Path>) -> Result<(), String> {
     let edges = db.edge_count().map_err(|e| e.to_string())?;
 
     println!("Database: {}", db_path.display());
+    println!("{}", describe_index(&db, db_path));
     println!("Nodes:    {}", nodes);
     println!("Edges:    {}", edges);
     Ok(())
@@ -859,6 +913,41 @@ mod tests {
 
         // `--force` is the documented escape: it clears, so a new root is fine.
         cmd_map(&db_path, &b, true).expect("--force permits a new root");
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// The provenance line must name the recorded root: that is the only thing
+    /// that distinguishes two databases on one host. A database with no root
+    /// recorded must say so rather than print a blank field.
+    #[test]
+    fn describe_index_names_the_recorded_root() {
+        let base = std::env::temp_dir().join(format!("deagle-cli-provenance-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("lib.rs"), "struct OnlyHere;\n").unwrap();
+        let db_path = base.join("db/graph.db");
+
+        cmd_map(&db_path, &base, false).expect("index the fixture root");
+        let db = GraphDb::open(&db_path).unwrap();
+        let line = describe_index(&db, &db_path);
+        assert!(
+            line.contains("deagle-cli-provenance"),
+            "the line must name the indexed root, got: {line}"
+        );
+        assert!(
+            line.contains("last modified"),
+            "it must also date the database, got: {line}"
+        );
+
+        // Control: a database with no root recorded says so, rather than
+        // printing a blank that reads like a root.
+        let bare_path = base.join("db/bare.db");
+        let bare = GraphDb::open(&bare_path).unwrap();
+        let bare_line = describe_index(&bare, &bare_path);
+        assert!(
+            bare_line.contains("<no root recorded>"),
+            "an unrecorded root must be named as such, got: {bare_line}"
+        );
 
         std::fs::remove_dir_all(&base).unwrap();
     }
