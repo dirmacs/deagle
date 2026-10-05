@@ -951,4 +951,76 @@ mod tests {
 
         std::fs::remove_dir_all(&base).unwrap();
     }
+
+    /// The defect in #11: with several graphs mapped on one host, a result
+    /// that does not say which index answered it cannot be trusted. This maps
+    /// TWO real roots to TWO databases and requires each provenance line to
+    /// name its own root and not the other's.
+    ///
+    /// `describe_index_names_the_recorded_root` maps one root and adds a
+    /// no-root control. That proves the function is not hardcoded, but it can
+    /// still pass if `describe_index` reported the wrong root: with only one
+    /// root ever mapped there is no second value to be wrong about. An
+    /// implementation reporting the first root for every database passes that
+    /// test and fails this one.
+    #[test]
+    fn describe_index_distinguishes_two_mapped_graphs() {
+        let base =
+            std::env::temp_dir().join(format!("deagle-cli-two-graph-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+
+        // Two real roots, named so neither name appears inside the other's path.
+        let alpha = base.join("alpha-project");
+        let beta = base.join("beta-project");
+        std::fs::create_dir_all(&alpha).unwrap();
+        std::fs::create_dir_all(&beta).unwrap();
+        std::fs::write(alpha.join("lib.rs"), "struct AlphaOnly;\n").unwrap();
+        std::fs::write(beta.join("lib.rs"), "struct BetaOnly;\n").unwrap();
+
+        // Two graphs mapped, as deagle resolves them: a path relative to
+        // whichever directory the caller is standing in.
+        let alpha_db_path = alpha.join("db/graph.db");
+        let beta_db_path = beta.join("db/graph.db");
+        cmd_map(&alpha_db_path, &alpha, false).expect("alpha must index");
+        cmd_map(&beta_db_path, &beta, false).expect("beta must index");
+
+        let alpha_line = {
+            let db = GraphDb::open(&alpha_db_path).unwrap();
+            describe_index(&db, &alpha_db_path)
+        };
+        let beta_line = {
+            let db = GraphDb::open(&beta_db_path).unwrap();
+            describe_index(&db, &beta_db_path)
+        };
+
+        // Each line names its OWN root.
+        assert!(
+            alpha_line.contains("alpha-project"),
+            "alpha's line must name alpha, got: {alpha_line}"
+        );
+        assert!(
+            beta_line.contains("beta-project"),
+            "beta's line must name beta, got: {beta_line}"
+        );
+
+        // Neither line leaks the other root. These are the assertions that fail
+        // against an implementation reporting one root for every graph.
+        assert!(
+            !alpha_line.contains("beta-project"),
+            "alpha's line must not name beta, got: {alpha_line}"
+        );
+        assert!(
+            !beta_line.contains("alpha-project"),
+            "beta's line must not name alpha, got: {beta_line}"
+        );
+
+        // The two lines are different values, not one string rendered twice --
+        // so a caller can compare a line against their own directory.
+        assert_ne!(
+            alpha_line, beta_line,
+            "two mapped graphs must produce distinguishable provenance lines"
+        );
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
 }
