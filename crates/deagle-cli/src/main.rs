@@ -321,6 +321,38 @@ fn cmd_map(db_path: &Path, dir: &Path, force: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Result freshness check for a single search hit.
+///
+/// A search answer is `path:line`, and that pair is trusted precisely because
+/// it looks authoritative. When the file changed after indexing, the path is
+/// still right and the line is not, and nothing in the output says so. We
+/// re-hash the file from disk and compare against the hash stored at index time
+/// (`file_hashes`), which is the same comparison `needs_reindex` uses when
+/// deciding what to re-index.
+///
+/// Deliberately a *signal* rather than a refusal: on a fast-moving repo a stale
+/// index is the normal state between `deagle map` runs, so refusing would make
+/// the tool useless exactly when a repository is active. The hit is returned
+/// because the path and the symbol are still useful, but it is labelled so the
+/// line number is not read as current.
+///
+/// Cost is bounded by the number of *result* files, not the size of the tree:
+/// hashing one small file measures ~0.03 ms.
+fn is_result_stale(db: &GraphDb, file_path: &str) -> bool {
+    // Stored paths are relative to the indexed root; without a recorded root we
+    // cannot resolve them, so decline to claim freshness rather than guess.
+    let Ok(Some(root)) = db.metadata_get(deagle_core::INDEX_ROOT_KEY) else {
+        return false;
+    };
+    let abs = Path::new(&root).join(file_path);
+    // Unreadable (deleted, moved, or unreadable permissions) is not the same as
+    // stale: we did not observe a difference, so do not report one.
+    match std::fs::read_to_string(&abs) {
+        Ok(content) => db.needs_reindex(file_path, &content).unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
 fn cmd_search(
     db_path: &Path,
     query: &str,
@@ -457,13 +489,39 @@ fn cmd_search(
     println!("{:<30} {:<12} {:<10} LOCATION", "NAME", "KIND", "LANG");
     let sep = "-".repeat(80);
     println!("{sep}");
+    // A file is hashed once per search, not once per hit: results routinely
+    // share files, and re-hashing per row would multiply the cost for nothing.
+    let mut freshness: std::collections::HashMap<&str, bool> = std::collections::HashMap::new();
+    let mut stale_files: Vec<&str> = Vec::new();
     for node in &results {
+        let stale = freshness
+            .entry(node.file_path.as_str())
+            .or_insert_with(|| is_result_stale(&db, &node.file_path));
+        if *stale && !stale_files.contains(&node.file_path.as_str()) {
+            stale_files.push(node.file_path.as_str());
+        }
         println!(
-            "{:<30} {:<12} {:<10} {}:{}",
-            node.name, node.kind, node.language, node.file_path, node.line_start,
+            "{:<30} {:<12} {:<10} {}:{}{}",
+            node.name,
+            node.kind,
+            node.language,
+            node.file_path,
+            node.line_start,
+            if *stale { "   [STALE]" } else { "" },
         );
     }
     println!("\n{} result(s)", results.len());
+
+    // The line number is the part that goes out of date, so say so rather than
+    // let a path:line pair be read as current.
+    if !stale_files.is_empty() {
+        eprintln!(
+            "warning: {} file(s) changed after indexing; line numbers above are from the \
+             index, not the working tree: {}\n         re-run `deagle map` for current line numbers.",
+            stale_files.len(),
+            stale_files.join(", ")
+        );
+    }
     Ok(())
 }
 
@@ -807,6 +865,47 @@ fn print_text_matches(matches: &[deagle_parse::text_search::TextMatch], column: 
 mod tests {
     use super::*;
     use deagle_core::GraphDb;
+
+    /// A search hit whose file changed after indexing must be reported as
+    /// stale, and one whose file is untouched must not be. Both directions,
+    /// because a guard that always claims staleness is as useless as none.
+    #[test]
+    fn is_result_stale_detects_a_changed_file() {
+        let dir = std::env::temp_dir().join(format!("deagle-cli-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("lib.rs");
+        std::fs::write(&file, "fn alpha() {}\n").unwrap();
+
+        let db_path = dir.join("graph.db");
+        let db = GraphDb::open(&db_path).unwrap();
+        db.metadata_set(deagle_core::INDEX_ROOT_KEY, &dir.to_string_lossy())
+            .unwrap();
+        db.store_file_hash("lib.rs", "fn alpha() {}\n").unwrap();
+
+        // must-pass control: unchanged file is not stale
+        assert!(
+            !is_result_stale(&db, "lib.rs"),
+            "an unchanged file must not be reported stale"
+        );
+
+        // the defect: file edited after indexing
+        std::fs::write(&file, "// inserted\nfn alpha() {}\n").unwrap();
+        assert!(
+            is_result_stale(&db, "lib.rs"),
+            "a file changed after indexing must be reported stale"
+        );
+
+        // an unrecorded root means the path cannot be resolved; decline rather
+        // than guess
+        let other = GraphDb::open(&dir.join("other.db")).unwrap();
+        assert!(!is_result_stale(&other, "lib.rs"));
+
+        // an unreadable path is not the same as a changed one
+        assert!(!is_result_stale(&db, "does-not-exist.rs"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// A second root must be refused, not silently corrupt the index. Paths are
     /// keyed relative to the indexed root, so the same filename in two roots
