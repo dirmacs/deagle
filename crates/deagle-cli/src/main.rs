@@ -421,7 +421,7 @@ fn cmd_search(
 
     // Apply path scope filter (positional paths).
     // The graph stores paths relative to the indexed root (e.g. "crates/foo/src/bar.rs").
-    // Users may pass absolute paths (e.g. /home/me/project/crates) or relative ones.
+    // Users may pass absolute paths (e.g. /path/to/project/crates) or relative ones.
     // Match if:
     //   (a) stored path starts with the given path, OR
     //   (b) stored path contains any component of the given path as a substring

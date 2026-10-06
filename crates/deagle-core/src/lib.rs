@@ -756,12 +756,12 @@ mod tests {
         };
 
         // Root A indexes its own lib.rs.
-        db.metadata_set(INDEX_ROOT_KEY, "/tmp/x/a").unwrap();
+        db.metadata_set(INDEX_ROOT_KEY, "/tmp/index-a").unwrap();
         db.insert_node(&node("OnlyInA")).unwrap();
         db.store_file_hash("lib.rs", "struct OnlyInA;").unwrap();
 
         // Root B, pointed at the SAME database, indexes its own lib.rs.
-        db.metadata_set(INDEX_ROOT_KEY, "/tmp/x/b").unwrap();
+        db.metadata_set(INDEX_ROOT_KEY, "/tmp/index-b").unwrap();
         db.insert_node(&node("OnlyInB")).unwrap();
         db.store_file_hash("lib.rs", "struct OnlyInB;").unwrap();
 
@@ -782,14 +782,14 @@ mod tests {
         // switching back to root A, A's own content must still be recorded as
         // current. Before the root-qualified key both roots shared one row, so
         // B's hash overwrote A's and A was permanently stale.
-        db.metadata_set(INDEX_ROOT_KEY, "/tmp/x/a").unwrap();
+        db.metadata_set(INDEX_ROOT_KEY, "/tmp/index-a").unwrap();
         assert!(
             !db.needs_reindex("lib.rs", "struct OnlyInA;").unwrap(),
             "root A's own content must still be recorded as current under its own key"
         );
 
         // Replacing B's file must leave A's nodes alone.
-        db.metadata_set(INDEX_ROOT_KEY, "/tmp/x/b").unwrap();
+        db.metadata_set(INDEX_ROOT_KEY, "/tmp/index-b").unwrap();
         db.remove_file("lib.rs").unwrap();
         let remaining: i64 = db
             .conn
@@ -847,7 +847,7 @@ mod tests {
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO metadata (key, value) VALUES (?1, '/tmp/legacy-root')",
+                "INSERT INTO metadata (key, value) VALUES (?1, '/tmp/legacy-index')",
                 rusqlite::params![INDEX_ROOT_KEY],
             )
             .unwrap();
@@ -864,7 +864,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            file_key, "/tmp/legacy-root/src/lib.rs",
+            file_key, "/tmp/legacy-index/src/lib.rs",
             "the pre-existing row must be backfilled with its root-qualified key"
         );
 
