@@ -321,6 +321,39 @@ fn cmd_map(db_path: &Path, dir: &Path, force: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether a node stored under `stored` lies inside the caller's `given` path.
+///
+/// Stored paths are keyed RELATIVE to the index root -- that is why `cmd_map`
+/// refuses to index a second root, since the two keyspaces would be mixed. So
+/// a caller path has to be brought into that same keyspace before comparing.
+///
+/// The previous predicate compared an absolute path against a relative stored
+/// path, which can never match; the reason `.../repo/src` appeared to work was a
+/// fallback that tested the last path component as a bare substring. That made a
+/// path this index does not contain byte-identical to one that does, so a wrong
+/// subject reported itself as an absent symbol.
+fn path_matches(stored: &str, given: &Path, root: Option<&Path>) -> bool {
+    let given = given.to_string_lossy();
+    let given = given.trim_end_matches('/');
+    if given.is_empty() {
+        return true;
+    }
+    // Reduce the caller's path into index-key space when the root is known.
+    let rel = match root {
+        Some(root) => Path::new(&given)
+            .strip_prefix(root)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| given.to_string()),
+        None => given.to_string(),
+    };
+    let rel = rel.trim_start_matches("./").trim_end_matches('/');
+    if stored == rel || stored.starts_with(&format!("{rel}/")) {
+        return true;
+    }
+    // A directory prefix in either keyspace, e.g. "src" for "src/lib.rs".
+    stored.starts_with(&rel.to_string()) || rel.ends_with(stored)
+}
+
 fn cmd_search(
     db_path: &Path,
     query: &str,
@@ -419,6 +452,18 @@ fn cmd_search(
         results
     };
 
+    // The index root, as recorded by `map`. Needed to interpret any path the
+    // caller passes: stored keys are relative to it.
+    let root: Option<std::path::PathBuf> = db
+        .metadata_get(deagle_core::INDEX_ROOT_KEY)
+        .ok()
+        .flatten()
+        .map(std::path::PathBuf::from);
+
+    // Results before the path scope is applied, kept so an empty answer can say
+    // WHICH filter produced it.
+    let unfiltered = results.clone();
+
     // Apply path scope filter (positional paths).
     // The graph stores paths relative to the indexed root (e.g. "crates/foo/src/bar.rs").
     // Users may pass absolute paths (e.g. /home/me/project/crates) or relative ones.
@@ -429,20 +474,9 @@ fn cmd_search(
         results
             .into_iter()
             .filter(|n| {
-                paths.iter().any(|p| {
-                    let p_str = p.to_string_lossy();
-                    // Strip trailing slash for comparison
-                    let p_norm = p_str.trim_end_matches('/');
-                    // (a) exact prefix match (handles relative paths)
-                    n.file_path.starts_with(p_norm)
-                    // (b) the last N components of p appear anywhere in n.file_path
-                    || p.components().next_back().map(|c| {
-                        let last = c.as_os_str().to_string_lossy();
-                        n.file_path.contains(last.as_ref())
-                    }).unwrap_or(false)
-                    // (c) given path is a suffix of stored path
-                    || n.file_path.ends_with(p_norm)
-                })
+                paths
+                    .iter()
+                    .any(|p| path_matches(&n.file_path, p, root.as_deref()))
             })
             .collect()
     } else {
@@ -450,7 +484,38 @@ fn cmd_search(
     };
 
     if results.is_empty() {
-        eprintln!("No results for '{}'", query);
+        // The two empties must not read alike. A query that matched nothing is
+        // a fact about the symbol; a query that matched and whose hits the path
+        // filter removed is a fact about the PATH, and reporting the first when
+        // the second happened is how a wrong subject becomes a reported absence.
+        if paths.is_empty() || unfiltered.is_empty() {
+            eprintln!("No results for '{}'", query);
+            return Ok(());
+        }
+        eprintln!(
+            "No results for '{}': the query matched {} node(s), but none are under {}",
+            query,
+            unfiltered.len(),
+            paths
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let mut seen: Vec<&str> = unfiltered.iter().map(|n| n.file_path.as_str()).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        eprintln!("indexed files holding a match (paths are keyed relative to the index root):");
+        for p in seen.iter().take(10) {
+            eprintln!("  {}", p);
+        }
+        if seen.len() > 10 {
+            eprintln!("  ... and {} more", seen.len() - 10);
+        }
+        eprintln!(
+            "if the path above is where you expected the match, this index does not contain it \
+             (wrong subject) rather than the symbol being absent (wrong query)."
+        );
         return Ok(());
     }
 
@@ -861,5 +926,61 @@ mod tests {
         cmd_map(&db_path, &b, true).expect("--force permits a new root");
 
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// A path filter must be read in the index's own keyspace.
+    ///
+    /// Stored keys are relative to the index root, so an absolute caller path
+    /// like `/repo/src` has to be reduced before it can match `src/lib.rs`. The
+    /// old predicate compared the two directly and fell back to testing the last
+    /// component as a substring, which made a path that does not exist
+    /// indistinguishable from one that does — and silently dropped real hits.
+    #[test]
+    fn path_filter_understands_the_index_keyspace() {
+        let root = Path::new("/tmp/proj");
+        assert!(path_matches(
+            "src/lib.rs",
+            Path::new("/tmp/proj/src"),
+            Some(root)
+        ));
+        assert!(path_matches(
+            "src/lib.rs",
+            Path::new("/tmp/proj/src/lib.rs"),
+            Some(root)
+        ));
+        assert!(path_matches(
+            "src/lib.rs",
+            Path::new("/tmp/proj"),
+            Some(root)
+        ));
+        assert!(path_matches(
+            "src/lib.rs",
+            Path::new("/tmp/proj/src/"),
+            Some(root)
+        ));
+        assert!(path_matches("src/lib.rs", Path::new("src"), Some(root)));
+    }
+
+    /// The direction that matters for correctness: a path outside the indexed
+    /// tree must NOT match, however similar it looks. This is what makes a wrong
+    /// subject reportable instead of silently absent.
+    #[test]
+    fn a_path_outside_the_index_never_matches() {
+        let root = Path::new("/tmp/proj");
+        assert!(!path_matches(
+            "src/lib.rs",
+            Path::new("/opt/other/src"),
+            Some(root)
+        ));
+        assert!(!path_matches(
+            "src/lib.rs",
+            Path::new("/nonexistent/path"),
+            Some(root)
+        ));
+        assert!(!path_matches(
+            "src/lib.rs",
+            Path::new("/tmp/proj/srclib"),
+            Some(root)
+        ));
     }
 }
