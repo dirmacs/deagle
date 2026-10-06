@@ -1,0 +1,30 @@
+# Build context: keep it small and deterministic.
+
+# Rust build output (the big one — target/ dwarfs source on this estate).
+target/
+**/target/
+
+# Version control + CI metadata.
+.git/
+.gitignore
+.github/
+
+# Local graph databases / indexed output.
+.deagle/
+**/.deagle/
+
+# Editor/OS cruft.
+*.swp
+.DS_Store
+.idea/
+.vscode/
+
+# Docs and tests are not needed to build the server binary.
+docs/
+**/tests/
+
+# Docker self-reference.
+Dockerfile
+.dockerignore
+docker-compose*.yml
+compose*.yml
