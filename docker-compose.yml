@@ -1,0 +1,13 @@
+services:
+  deagle:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - deagle-data:/app/data
+    environment:
+      - RUST_LOG=info
+    restart: unless-stopped
+
+volumes:
+  deagle-data:
