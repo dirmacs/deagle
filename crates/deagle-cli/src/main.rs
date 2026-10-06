@@ -354,6 +354,39 @@ fn path_matches(stored: &str, given: &Path, root: Option<&Path>) -> bool {
     stored.starts_with(&rel.to_string()) || rel.ends_with(stored)
 }
 
+fn describe_index(db: &GraphDb, db_path: &Path) -> String {
+    let root = db
+        .metadata_get(deagle_core::INDEX_ROOT_KEY)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "<no root recorded>".to_string());
+    match std::fs::metadata(db_path).and_then(|m| m.modified()) {
+        Ok(modified) => match modified.elapsed() {
+            Ok(age) => format!(
+                "index root: {root}  (database last modified {})",
+                human_age(age)
+            ),
+            Err(_) => format!("index root: {root}"),
+        },
+        Err(_) => format!("index root: {root}"),
+    }
+}
+
+/// A coarse age, not a date. Nothing here needs a calendar, and the only
+/// timestamp available is a file's, so "how long ago" is the honest unit.
+fn human_age(age: std::time::Duration) -> String {
+    let secs = age.as_secs();
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3_600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h ago", secs / 3_600)
+    } else {
+        format!("{}d ago", secs / 86_400)
+    }
+}
+
 fn cmd_search(
     db_path: &Path,
     query: &str,
@@ -412,6 +445,8 @@ fn cmd_search(
     }
 
     let db = GraphDb::open(db_path).map_err(|e| format!("Failed to open db: {}", e))?;
+    // Say which database is answering before the rows that depend on it.
+    eprintln!("{}", describe_index(&db, db_path));
     let results = if fuzzy {
         db.fuzzy_search_nodes(query)
             .map_err(|e| format!("Search failed: {}", e))?
@@ -652,6 +687,7 @@ fn cmd_stats(db_path: &Path, hint_path: Option<&Path>) -> Result<(), String> {
     let edges = db.edge_count().map_err(|e| e.to_string())?;
 
     println!("Database: {}", db_path.display());
+    println!("{}", describe_index(&db, db_path));
     println!("Nodes:    {}", nodes);
     println!("Edges:    {}", edges);
     Ok(())
@@ -982,5 +1018,89 @@ mod tests {
             Path::new("/tmp/proj/srclib"),
             Some(root)
         ));
+    }
+
+    /// The provenance line must name the recorded root: that is the only thing
+    /// that distinguishes two databases on one host. A database with no root
+    /// recorded must say so rather than print a blank field.
+    #[test]
+    fn describe_index_names_the_recorded_root() {
+        let base =
+            std::env::temp_dir().join(format!("deagle-cli-provenance-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("lib.rs"), "struct OnlyHere;\n").unwrap();
+        let db_path = base.join("db/graph.db");
+
+        cmd_map(&db_path, &base, false).expect("index the fixture root");
+        let db = GraphDb::open(&db_path).unwrap();
+        let line = describe_index(&db, &db_path);
+        assert!(
+            line.contains("deagle-cli-provenance"),
+            "the line must name the indexed root, got: {line}"
+        );
+        assert!(
+            line.contains("last modified"),
+            "it must also date the database, got: {line}"
+        );
+
+        // Control: a database with no root recorded says so, rather than
+        // printing a blank that reads like a root.
+        let bare_path = base.join("db/bare.db");
+        let bare = GraphDb::open(&bare_path).unwrap();
+        let bare_line = describe_index(&bare, &bare_path);
+        assert!(
+            bare_line.contains("<no root recorded>"),
+            "an unrecorded root must be named as such, got: {bare_line}"
+        );
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// The provenance line only earns its keep if it can tell two mapped graphs
+    /// apart -- the whole point of #11 is that a reader cannot otherwise tell
+    /// which database answered. A single-root test cannot show that: the fixture's
+    /// temp-dir prefix is shared by every path beneath it, so an implementation
+    /// reporting the database's *location* passes while naming no root at all.
+    ///
+    /// So map two roots into two databases, and require each line to name its own
+    /// root and not the other's. The root names appear nowhere in the database
+    /// paths, so a line derived from the database path fails here.
+    #[test]
+    fn describe_index_distinguishes_two_mapped_roots() {
+        let base = std::env::temp_dir().join(format!("deagle-cli-two-{}", std::process::id()));
+        let zebra = base.join("zebra-root");
+        let quokka = base.join("quokka-root");
+        std::fs::create_dir_all(&zebra).unwrap();
+        std::fs::create_dir_all(&quokka).unwrap();
+        std::fs::write(zebra.join("lib.rs"), "struct OnlyInZebra;\n").unwrap();
+        std::fs::write(quokka.join("lib.rs"), "struct OnlyInQuokka;\n").unwrap();
+
+        // Databases live in a separate tree so no database path contains a root name.
+        let db_zebra = base.join("dbs/a/graph.db");
+        let db_quokka = base.join("dbs/b/graph.db");
+        cmd_map(&db_zebra, &zebra, false).expect("index zebra");
+        cmd_map(&db_quokka, &quokka, false).expect("index quokka");
+
+        let line_zebra = describe_index(&GraphDb::open(&db_zebra).unwrap(), &db_zebra);
+        let line_quokka = describe_index(&GraphDb::open(&db_quokka).unwrap(), &db_quokka);
+
+        assert!(
+            line_zebra.contains("zebra-root"),
+            "zebra's line must name the root it was indexed from, got: {line_zebra}"
+        );
+        assert!(
+            !line_zebra.contains("quokka"),
+            "zebra's line must not name the other root, got: {line_zebra}"
+        );
+        assert!(
+            line_quokka.contains("quokka-root"),
+            "quokka's line must name the root it was indexed from, got: {line_quokka}"
+        );
+        assert!(
+            !line_quokka.contains("zebra"),
+            "quokka's line must not name the other root, got: {line_quokka}"
+        );
+
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }
