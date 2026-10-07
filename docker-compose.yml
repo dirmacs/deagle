@@ -1,0 +1,11 @@
+services:
+  deagle:
+    build: .
+    ports:
+      - "3500:3500"
+    volumes:
+      - deagle-data:/data
+    restart: unless-stopped
+
+volumes:
+  deagle-data:
