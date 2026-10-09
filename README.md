@@ -58,8 +58,11 @@ deagle search "Config" --kind struct
 deagle search "proc" --fuzzy          # fuzzy match (skim)
 
 # Freshness: every search/keyword answer re-hashes the files it cites and
-# stamps each row FRESH / STALE / UNKNOWN, then prints a summary. A stale
-# file prints, e.g.:
+# derives a verdict. STALE and UNKNOWN rows name themselves in the STATE
+# column and on stderr; a FRESH row's STATE cell stays blank (fresh is the
+# normal case), and an all-fresh answer reports it once on the summary line:
+#   freshness: all cited files FRESH (content matches the index)
+# A stale file prints, e.g.:
 #   STALE (indexed 2026-10-09 12:00:00, now src/lib.rs (file modified 35m ago)) — results may be wrong; re-run deagle map
 deagle search "handler" --require-fresh   # refuse to answer from a stale index
 deagle keyword "handler" --require-fresh
@@ -90,7 +93,7 @@ a coordinate is never emitted silently once its file has moved on:
 
 | Verdict | Meaning |
 |---|---|
-| `FRESH` | stored hash matches the current file bytes |
+| `FRESH` | stored hash matches the current file bytes — the row's STATE cell is blank; an all-fresh answer prints `freshness: all cited files FRESH` once on stderr |
 | `STALE` | stored hash and current bytes both exist and differ — re-run `deagle map` |
 | `UNKNOWN` | freshness could not be derived (unreadable file, or no hash row — zero-node files never get one) |
 
