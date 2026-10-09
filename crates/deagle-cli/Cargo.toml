@@ -25,3 +25,9 @@ globset = "0.4"
 tokei = "14"
 serde = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+# Tests open the fixture database directly (the zero-node-trap fixture deletes
+# a file_hashes row to simulate an unhashable index). Same feature set as
+# deagle-core uses, so no second build of the bundled sqlite.
+rusqlite = { version = "0.34", features = ["bundled"] }

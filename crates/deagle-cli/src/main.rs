@@ -6,7 +6,7 @@
 //! - `deagle stats` — show graph statistics
 
 use clap::{Parser, Subcommand};
-use deagle_core::{Edge, EdgeKind, GraphDb, Language};
+use deagle_core::{Edge, EdgeKind, Freshness, GraphDb, Language};
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -46,6 +46,13 @@ enum Commands {
         /// Filter by language (e.g., "rust", "python", "go", "typescript")
         #[arg(long, short = 'l')]
         lang: Option<String>,
+        /// Refuse to answer from a stale index: re-hash every cited file and,
+        /// if any is STALE (content changed since indexing), exit 2 without
+        /// printing results; if any file's freshness could not be determined
+        /// (unreadable file, or no hash row — zero-node files never get one),
+        /// exit 3. A fully fresh index answers normally and exits 0.
+        #[arg(long)]
+        require_fresh: bool,
         /// Directory/file paths to scope the search (default: use graph DB).
         /// When paths are provided and no graph.db exists, falls back to
         /// ripgrep-style text search scoped to those paths.
@@ -56,6 +63,13 @@ enum Commands {
     Keyword {
         /// Search query (searches entity names and content)
         query: String,
+        /// Refuse to answer from a stale index: re-hash every cited file and,
+        /// if any is STALE (content changed since indexing), exit 2 without
+        /// printing results; if any file's freshness could not be determined
+        /// (unreadable file, or no hash row — zero-node files never get one),
+        /// exit 3. A fully fresh index answers normally and exits 0.
+        #[arg(long)]
+        require_fresh: bool,
     },
     /// Show graph statistics
     Stats {
@@ -115,6 +129,7 @@ fn main() {
             kind,
             fuzzy,
             lang,
+            require_fresh,
             paths,
         } => cmd_search(
             &cli.db,
@@ -122,9 +137,13 @@ fn main() {
             kind.as_deref(),
             fuzzy,
             lang.as_deref(),
+            require_fresh,
             &paths,
         ),
-        Commands::Keyword { query } => cmd_keyword(&cli.db, &query),
+        Commands::Keyword {
+            query,
+            require_fresh,
+        } => cmd_keyword(&cli.db, &query, require_fresh),
         Commands::Stats { hint_path } => cmd_stats(&cli.db, hint_path.as_deref()),
         Commands::Loc { dir } => cmd_loc(&dir),
         #[cfg(feature = "pattern")]
@@ -148,6 +167,17 @@ fn main() {
     };
 
     if let Err(e) = result {
+        // Freshness failures carry their own exit code so a caller can tell
+        // "the index is stale" (2) from "the index cannot be verified" (3)
+        // from any ordinary failure (1). The verdict lines were already
+        // printed by the command itself; here we only refuse to answer.
+        if let Some(code) = e.strip_prefix("FRESHNESS_CHECK_FAILED:") {
+            let code: i32 = code.parse().unwrap_or(1);
+            eprintln!(
+                "refusing to answer from an unverified index (--require-fresh); re-run `deagle map` first"
+            );
+            std::process::exit(code);
+        }
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }
@@ -387,12 +417,167 @@ fn human_age(age: std::time::Duration) -> String {
     }
 }
 
+/// Enriched with a per-file freshness verdict — the unit `search`/`keyword`
+/// print, so a coordinate can never again be emitted without its provenance.
+struct ScoredNode {
+    node: deagle_core::Node,
+    freshness: deagle_core::FreshnessRow,
+}
+
+/// Exit code for `--require-fresh` when at least one cited file is STALE.
+const EXIT_STALE: i32 = 2;
+/// Exit code for `--require-fresh` when freshness could not be derived for at
+/// least one cited file (unreadable file, or no hash row — a file the index
+/// never hashed is unknown, not clean).
+const EXIT_UNVERIFIABLE: i32 = 3;
+
+/// Resolve the index-root-relative `stored` path against `root` for hashing.
+///
+/// The root recorded in the index is authoritative: it is where `map` read
+/// the file from, and keys are relative to it. With no root recorded — an
+/// index that predates root tracking — the file may live anywhere; the probe
+/// then answers could-not-determine rather than guess a filesystem location,
+/// because a guess that misses would manufacture a verdict.
+fn resolve_for_hash(stored: &str, root: Option<&Path>) -> Option<PathBuf> {
+    let p = Path::new(stored);
+    if p.is_absolute() {
+        return Some(p.to_path_buf());
+    }
+    root.map(|r| r.join(p))
+}
+
+/// Freshness of every file a result set cites: one re-hash per cited file,
+/// never a whole-index scan. Results are grouped by stored path so a file is
+/// hashed once however many results cite it; results are returned in their
+/// original order, each carrying its file's verdict.
+fn freshness_for_results(db: &GraphDb, results: &[deagle_core::Node]) -> Vec<ScoredNode> {
+    let root = db
+        .metadata_get(deagle_core::INDEX_ROOT_KEY)
+        .ok()
+        .flatten()
+        .map(PathBuf::from);
+    let mut by_file: std::collections::HashMap<String, deagle_core::FreshnessRow> =
+        std::collections::HashMap::new();
+    for node in results {
+        if !by_file.contains_key(&node.file_path) {
+            let row = match resolve_for_hash(&node.file_path, root.as_deref()) {
+                Some(on_disk) => db.file_freshness(&node.file_path, &on_disk),
+                None => deagle_core::FreshnessRow {
+                    stored_path: node.file_path.clone(),
+                    on_disk_path: PathBuf::from(&node.file_path),
+                    verdict: Freshness::CouldNotDetermine,
+                    indexed_at: None,
+                    file_mtime: None,
+                },
+            };
+            by_file.insert(node.file_path.clone(), row);
+        }
+    }
+    results
+        .iter()
+        .map(|node| ScoredNode {
+            node: node.clone(),
+            freshness: by_file[&node.file_path].clone(),
+        })
+        .collect()
+}
+
+/// One verdict token per result row. `fresh` prints blank — a fresh row is
+/// the normal case and must not add noise; the summary line says "all fresh"
+/// once. Stale and unknown rows name themselves, because those are the rows a
+/// reader must not trust at the cited line numbers.
+fn verdict_label(v: Freshness) -> &'static str {
+    match v {
+        Freshness::Fresh => "",
+        Freshness::Stale => "STALE",
+        Freshness::CouldNotDetermine => "UNKNOWN",
+    }
+}
+
+/// Print the freshness summary line the issue asks for and return the exit
+/// code the query should use: 2 when any cited file is stale, 3 when any is
+/// unverifiable, 0 when every cited file is fresh. The line goes to stderr so
+/// piped consumers see only the rows, and it is impossible to silence: every
+/// answered query emits exactly one.
+fn report_freshness(rows: &[ScoredNode], require_fresh: bool) -> Result<(), String> {
+    // Report per FILE, not per result row: several results can cite the same
+    // file, and printing the verdict once per row would make one stale file
+    // read as many. The per-row STATE column already names the file on every
+    // row; the summary names each distinct file once.
+    let mut stale: Vec<&ScoredNode> = Vec::new();
+    let mut unknown: Vec<&ScoredNode> = Vec::new();
+    let mut seen_stale: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut seen_unknown: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for r in rows {
+        match r.freshness.verdict {
+            Freshness::Stale => {
+                if seen_stale.insert(r.freshness.stored_path.as_str()) {
+                    stale.push(r);
+                }
+            }
+            Freshness::CouldNotDetermine => {
+                if seen_unknown.insert(r.freshness.stored_path.as_str()) {
+                    unknown.push(r);
+                }
+            }
+            Freshness::Fresh => {}
+        }
+    }
+
+    if !stale.is_empty() {
+        eprintln!();
+        for r in &stale {
+            let indexed = r
+                .freshness
+                .indexed_at
+                .as_deref()
+                .unwrap_or("<no indexed_at recorded>");
+            let now = match r.freshness.file_mtime.and_then(|m| m.elapsed().ok()) {
+                Some(age) => {
+                    format!(
+                        "{} (file modified {})",
+                        r.freshness.stored_path,
+                        human_age(age)
+                    )
+                }
+                None => r.freshness.stored_path.clone(),
+            };
+            eprintln!(
+                "STALE (indexed {}, now {}) — results may be wrong; re-run deagle map",
+                indexed, now
+            );
+        }
+    }
+    if !unknown.is_empty() {
+        eprintln!();
+        for r in &unknown {
+            eprintln!(
+                "FRESHNESS UNKNOWN: {} — freshness unverifiable (unreadable file, or no recorded hash)",
+                r.freshness.stored_path
+            );
+        }
+    }
+
+    if stale.is_empty() && unknown.is_empty() {
+        eprintln!("freshness: all cited files FRESH (content matches the index)");
+        return Ok(());
+    }
+    if !require_fresh {
+        return Ok(());
+    }
+    if !stale.is_empty() {
+        return Err(format!("FRESHNESS_CHECK_FAILED:{}", EXIT_STALE));
+    }
+    Err(format!("FRESHNESS_CHECK_FAILED:{}", EXIT_UNVERIFIABLE))
+}
+
 fn cmd_search(
     db_path: &Path,
     query: &str,
     kind: Option<&str>,
     fuzzy: bool,
     lang: Option<&str>,
+    require_fresh: bool,
     paths: &[PathBuf],
 ) -> Result<(), String> {
     // If the graph DB doesn't exist, give an actionable message.
@@ -554,16 +739,30 @@ fn cmd_search(
         return Ok(());
     }
 
-    println!("{:<30} {:<12} {:<10} LOCATION", "NAME", "KIND", "LANG");
-    let sep = "-".repeat(80);
+    // Every emitted coordinate is index-time data. Before printing one row,
+    // re-hash the cited files and attach the verdict, so a coordinate can
+    // never be emitted silently when its file has moved on.
+    let scored = freshness_for_results(&db, &results);
+    report_freshness(&scored, require_fresh)?;
+
+    println!(
+        "{:<30} {:<12} {:<10} {:<8} LOCATION",
+        "NAME", "KIND", "LANG", "STATE"
+    );
+    let sep = "-".repeat(88);
     println!("{sep}");
-    for node in &results {
+    for r in &scored {
         println!(
-            "{:<30} {:<12} {:<10} {}:{}",
-            node.name, node.kind, node.language, node.file_path, node.line_start,
+            "{:<30} {:<12} {:<10} {:<8} {}:{}",
+            r.node.name,
+            r.node.kind,
+            r.node.language,
+            verdict_label(r.freshness.verdict),
+            r.node.file_path,
+            r.node.line_start,
         );
     }
-    println!("\n{} result(s)", results.len());
+    println!("\n{} result(s)", scored.len());
     Ok(())
 }
 
@@ -591,7 +790,7 @@ fn sanitize_fts5_query(raw: &str) -> String {
     collapsed.join(" ")
 }
 
-fn cmd_keyword(db_path: &Path, query: &str) -> Result<(), String> {
+fn cmd_keyword(db_path: &Path, query: &str, require_fresh: bool) -> Result<(), String> {
     let db = GraphDb::open(db_path).map_err(|e| format!("Failed to open db: {}", e))?;
     // FTS5 has its own query syntax — it doesn't understand regex alternation.
     // Agents (and humans) frequently pass `foo\|bar` or `foo|bar` expecting
@@ -608,16 +807,27 @@ fn cmd_keyword(db_path: &Path, query: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    println!("{:<30} {:<12} {:<10} LOCATION", "NAME", "KIND", "LANG");
-    let sep = "-".repeat(80);
+    let scored = freshness_for_results(&db, &results);
+    report_freshness(&scored, require_fresh)?;
+
+    println!(
+        "{:<30} {:<12} {:<10} {:<8} LOCATION",
+        "NAME", "KIND", "LANG", "STATE"
+    );
+    let sep = "-".repeat(88);
     println!("{sep}");
-    for node in &results {
+    for r in &scored {
         println!(
-            "{:<30} {:<12} {:<10} {}:{}",
-            node.name, node.kind, node.language, node.file_path, node.line_start,
+            "{:<30} {:<12} {:<10} {:<8} {}:{}",
+            r.node.name,
+            r.node.kind,
+            r.node.language,
+            verdict_label(r.freshness.verdict),
+            r.node.file_path,
+            r.node.line_start,
         );
     }
-    println!("\n{} result(s) (BM25 ranked)", results.len());
+    println!("\n{} result(s) (BM25 ranked)", scored.len());
     Ok(())
 }
 
@@ -1102,5 +1312,137 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// End-to-end over a real fixture directory: a fresh index must render
+    /// every cited file FRESH and answer; after the file's content changes
+    /// the same query must name it STALE; and a cited file with no hash row
+    /// — the zero-node trap — must render could-not-determine, never stale.
+    /// `report_freshness` is the seam the assertions hang on: it is what both
+    /// `cmd_search` and `cmd_keyword` call, so testing it tests both.
+    #[test]
+    fn freshness_signal_discriminates_all_three_states() {
+        let base = std::env::temp_dir().join(format!("deagle-cli-fresh-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("lib.rs"), "pub fn queryable() {}\n").unwrap();
+        let db_path = base.join("db/graph.db");
+        cmd_map(&db_path, &base, false).expect("index the fixture");
+
+        let db = GraphDb::open(&db_path).unwrap();
+        let results = db.search_nodes("queryable").unwrap();
+        assert!(!results.is_empty(), "the fixture symbol must be indexed");
+
+        // Fresh: the index matches the file. Exit 0, and every row is FRESH.
+        let scored = freshness_for_results(&db, &results);
+        assert_eq!(
+            scored.len(),
+            results.len(),
+            "result order and count preserved"
+        );
+        assert!(
+            scored
+                .iter()
+                .all(|r| r.freshness.verdict == Freshness::Fresh),
+            "a just-indexed file must be fresh"
+        );
+        report_freshness(&scored, true).expect("a fresh index answers under --require-fresh");
+
+        // Stale: change the file's content between index and query.
+        std::fs::write(
+            base.join("lib.rs"),
+            "pub fn queryable() { println!(\"moved\"); }\n",
+        )
+        .unwrap();
+        let scored = freshness_for_results(&db, &results);
+        assert!(
+            scored
+                .iter()
+                .all(|r| r.freshness.verdict == Freshness::Stale),
+            "changed content must read stale"
+        );
+        // Without --require-fresh the query still answers (the signal is
+        // advisory); with it the refusal names the stale exit code 2.
+        report_freshness(&scored, false).expect("advisory mode still answers when stale");
+        let err =
+            report_freshness(&scored, true).expect_err("stale must refuse under --require-fresh");
+        assert!(
+            err.ends_with(&format!(":{}", EXIT_STALE)),
+            "stale refusal must carry exit {}, got: {err}",
+            EXIT_STALE
+        );
+
+        // The zero-node trap: a cited file whose hash row is absent must read
+        // could-not-determine — never stale (nothing compares), never fresh
+        // (nothing proven). Delete the row, leaving the nodes intact.
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute("DELETE FROM file_hashes", []).unwrap();
+        drop(conn);
+        let scored = freshness_for_results(&db, &results);
+        assert!(
+            scored
+                .iter()
+                .all(|r| r.freshness.verdict == Freshness::CouldNotDetermine),
+            "a node without a hash row is unverifiable — not stale"
+        );
+        let err = report_freshness(&scored, true)
+            .expect_err("unverifiable must refuse under --require-fresh");
+        assert!(
+            err.ends_with(&format!(":{}", EXIT_UNVERIFIABLE)),
+            "unverifiable refusal must carry exit {}, got: {err}",
+            EXIT_UNVERIFIABLE
+        );
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// An unreadable cited file must not read as stale (no comparison ran)
+    /// nor as fresh (nothing was proven) — it is could-not-determine, and
+    /// `--require-fresh` must refuse it with exit 3.
+    #[test]
+    fn freshness_of_a_missing_file_is_unknown_not_stale() {
+        let base = std::env::temp_dir().join(format!("deagle-cli-missing-{}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("lib.rs"), "pub fn washere() {}\n").unwrap();
+        let db_path = base.join("db/graph.db");
+        cmd_map(&db_path, &base, false).expect("index the fixture");
+
+        std::fs::remove_file(base.join("lib.rs")).unwrap();
+
+        let db = GraphDb::open(&db_path).unwrap();
+        let results = db.search_nodes("washere").unwrap();
+        let scored = freshness_for_results(&db, &results);
+        assert!(
+            scored
+                .iter()
+                .all(|r| r.freshness.verdict == Freshness::CouldNotDetermine),
+            "a deleted file's freshness is unverifiable, not stale"
+        );
+        let err = report_freshness(&scored, true)
+            .expect_err("a missing file must refuse under --require-fresh");
+        assert!(
+            err.ends_with(&format!(":{}", EXIT_UNVERIFIABLE)),
+            "expected exit {}, got: {err}",
+            EXIT_UNVERIFIABLE
+        );
+
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// Relative stored paths resolve against the recorded index root; an
+    /// index with no recorded root cannot resolve a relative path, so the
+    /// verdict is could-not-determine rather than a hash of the wrong file.
+    #[test]
+    fn resolve_for_hash_needs_the_root_for_relative_paths() {
+        let root = Path::new("/idx/root");
+        assert_eq!(
+            resolve_for_hash("src/lib.rs", Some(root)),
+            Some(PathBuf::from("/idx/root/src/lib.rs"))
+        );
+        assert_eq!(
+            resolve_for_hash("/abs/lib.rs", Some(root)),
+            Some(PathBuf::from("/abs/lib.rs")),
+            "absolute paths resolve on their own"
+        );
+        assert_eq!(resolve_for_hash("src/lib.rs", None), None);
     }
 }

@@ -206,6 +206,48 @@ pub enum DeagleError {
 
 pub type Result<T> = std::result::Result<T, DeagleError>;
 
+/// Freshness of one indexed file, derived by re-hashing the file on disk and
+/// comparing against the `file_hashes` row the index recorded.
+///
+/// The line numbers and FTS content the index answers from are index-time
+/// facts. Whether they still describe the file is a separate, derivable
+/// question — and it has three answers, not two:
+///
+/// - `Fresh`: the stored hash matches the current file bytes.
+/// - `Stale`: both hashes exist and differ.
+/// - `CouldNotDetermine`: no comparison was possible — the file could not be
+///   read, or no hash row was recorded for it.
+///
+/// `CouldNotDetermine` must NEVER fold into `Fresh` (a file with no hash row
+/// is unknown, not clean — zero-node files skip the hash write entirely, so
+/// "no row" is also what an unreadable or never-hashed file looks like) and
+/// NEVER into `Stale` (a missing row is not evidence of a change). Folding it
+/// either way would re-create the silence this type exists to remove.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Freshness {
+    /// The stored content hash matches the current file bytes.
+    Fresh,
+    /// The stored content hash and the current file bytes both exist and differ.
+    Stale,
+    /// Freshness could not be derived (unreadable file, or no hash row).
+    CouldNotDetermine,
+}
+
+/// The freshness probe for one file cited by the index.
+#[derive(Debug, Clone)]
+pub struct FreshnessRow {
+    /// The stored, root-relative path as the index recorded it.
+    pub stored_path: String,
+    /// The on-disk path the hash comparison ran against.
+    pub on_disk_path: std::path::PathBuf,
+    /// The derived verdict for this file.
+    pub verdict: Freshness,
+    /// The `file_hashes.indexed_at` timestamp, when a row exists.
+    pub indexed_at: Option<String>,
+    /// The current file mtime, when the file could be statted.
+    pub file_mtime: Option<std::time::SystemTime>,
+}
+
 #[cfg(feature = "sqlite")]
 /// SQLite-backed code graph database.
 pub struct GraphDb {
@@ -611,6 +653,52 @@ impl GraphDb {
             rusqlite::params![self.file_key(file_path), hash],
         )?;
         Ok(())
+    }
+
+    /// Derive the freshness of one file cited by the index.
+    ///
+    /// The comparison is content hash against content hash: what the index
+    /// recorded at `map` time versus what the file on disk hashes to now.
+    /// `on_disk_path` is the already-resolved absolute path; the caller owns
+    /// the index-root join so the same relative path is never resolved twice.
+    ///
+    /// A file is `Fresh` only when both hashes exist and agree, `Stale` only
+    /// when both exist and differ. Anything else — an unreadable file, a
+    /// missing hash row — is `CouldNotDetermine`, which callers must render
+    /// as unknown rather than letting it read as either fresh or stale.
+    pub fn file_freshness(
+        &self,
+        stored_path: &str,
+        on_disk_path: &std::path::Path,
+    ) -> FreshnessRow {
+        let row: Option<(String, String)> = self
+            .conn
+            .query_row(
+                "SELECT content_hash, indexed_at FROM file_hashes WHERE file_path = ?1",
+                [self.file_key(stored_path)],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        let file_mtime = std::fs::metadata(on_disk_path)
+            .and_then(|m| m.modified())
+            .ok();
+        let current_hash = std::fs::read_to_string(on_disk_path)
+            .ok()
+            .map(|c| Self::content_hash(&c));
+        let (indexed_at, verdict) = match (row, current_hash) {
+            (Some((stored, at)), Some(current)) if stored == current => {
+                (Some(at), Freshness::Fresh)
+            }
+            (Some((_, at)), Some(_)) => (Some(at), Freshness::Stale),
+            (row, _) => (row.map(|(_, at)| at), Freshness::CouldNotDetermine),
+        };
+        FreshnessRow {
+            stored_path: stored_path.to_string(),
+            on_disk_path: on_disk_path.to_path_buf(),
+            verdict,
+            indexed_at,
+            file_mtime,
+        }
     }
 
     /// The root-qualified key for a file, used for all index bookkeeping.
@@ -1392,5 +1480,60 @@ mod tests {
         let parsed: Node = serde_json::from_str(&json).unwrap();
         assert!(parsed.content.is_none());
         assert_eq!(parsed.language, Language::Go);
+    }
+
+    /// Freshness is a hash comparison: same bytes must read Fresh, different
+    /// bytes must read Stale, and a file with no hash row must read
+    /// CouldNotDetermine — the zero-node trap. Zero-node files skip the hash
+    /// write, so a missing row is what "never hashed" looks like; folding it
+    /// into Stale would indict every unhashable file, and folding it into
+    /// Fresh would silence exactly the gap this probe exists to expose.
+    #[test]
+    fn file_freshness_discriminates_fresh_stale_unknown() {
+        let dir = std::env::temp_dir().join(format!("deagle-fresh-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.rs");
+        let b = dir.join("b.rs");
+        let c = dir.join("c.rs");
+        std::fs::write(&a, "fn alpha() {}\n").unwrap();
+        std::fs::write(&b, "fn beta() {}\n").unwrap();
+        std::fs::write(&c, "fn gamma() {}\n").unwrap();
+
+        let db = GraphDb::in_memory().unwrap();
+        db.store_file_hash("a.rs", "fn alpha() {}\n").unwrap();
+        db.store_file_hash("b.rs", "fn beta() {}\n").unwrap();
+        // c.rs deliberately has NO hash row: the zero-node shape.
+
+        let fa = db.file_freshness("a.rs", &a);
+        assert_eq!(fa.verdict, Freshness::Fresh, "same bytes must be fresh");
+        assert!(
+            fa.indexed_at.is_some(),
+            "a stored row carries its indexed_at"
+        );
+
+        std::fs::write(&b, "fn beta() { todo!() }\n").unwrap();
+        let fb = db.file_freshness("b.rs", &b);
+        assert_eq!(fb.verdict, Freshness::Stale, "changed bytes must be stale");
+
+        let fc = db.file_freshness("c.rs", &c);
+        assert_eq!(
+            fc.verdict,
+            Freshness::CouldNotDetermine,
+            "no hash row is unknown — never fresh, never stale"
+        );
+        assert!(fc.indexed_at.is_none(), "there is no row to date");
+
+        // An unreadable file with a stored hash is also CouldNotDetermine:
+        // the comparison could not be run, and an absent read is not a diff.
+        let gone = dir.join("gone.rs");
+        db.store_file_hash("gone.rs", "fn gone() {}\n").unwrap();
+        let fg = db.file_freshness("gone.rs", &gone);
+        assert_eq!(
+            fg.verdict,
+            Freshness::CouldNotDetermine,
+            "an unreadable file must not read as fresh OR stale"
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

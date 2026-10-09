@@ -57,6 +57,16 @@ deagle search "handler"
 deagle search "Config" --kind struct
 deagle search "proc" --fuzzy          # fuzzy match (skim)
 
+# Freshness: every search/keyword answer re-hashes the files it cites and
+# derives a verdict. STALE and UNKNOWN rows name themselves in the STATE
+# column and on stderr; a FRESH row's STATE cell stays blank (fresh is the
+# normal case), and an all-fresh answer reports it once on the summary line:
+#   freshness: all cited files FRESH (content matches the index)
+# A stale file prints, e.g.:
+#   STALE (indexed 2026-10-09 12:00:00, now src/lib.rs (file modified 35m ago)) — results may be wrong; re-run deagle map
+deagle search "handler" --require-fresh   # refuse to answer from a stale index
+deagle keyword "handler" --require-fresh
+
 # Structural AST search (ast-grep patterns)
 deagle sg '$X.unwrap()'               # find all unwrap calls
 deagle sg 'fn $NAME($$$) { $$$ }'     # find all functions
@@ -73,6 +83,32 @@ deagle loc .
 # Graph statistics
 deagle stats
 ```
+
+## Freshness & exit codes
+
+`deagle search` and `deagle keyword` answer from the index's index-time line
+numbers and FTS content. Before printing a row they re-hash the cited file
+from disk and compare it to the `file_hashes` row recorded at `map` time, so
+a coordinate is never emitted silently once its file has moved on:
+
+| Verdict | Meaning |
+|---|---|
+| `FRESH` | stored hash matches the current file bytes — the row's STATE cell is blank; an all-fresh answer prints `freshness: all cited files FRESH` once on stderr |
+| `STALE` | stored hash and current bytes both exist and differ — re-run `deagle map` |
+| `UNKNOWN` | freshness could not be derived (unreadable file, or no hash row — zero-node files never get one) |
+
+With `--require-fresh`, the command refuses to answer from an index it cannot
+stand behind and exits non-zero *instead of* printing results:
+
+| Exit | When |
+|---|---|
+| 0 | every cited file is FRESH — results are printed |
+| 1 | ordinary error (no index, bad query, …) |
+| 2 | at least one cited file is STALE |
+| 3 | at least one cited file's freshness is UNKNOWN / unverifiable |
+
+Without `--require-fresh` the freshness line is advisory: results print
+normally, but any STALE or UNKNOWN row is named on stderr.
 
 ## Autonomous agent use cases
 
