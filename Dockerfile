@@ -18,7 +18,7 @@
 #   DEAGLE_DB    path to the graph database (default /data/.deagle/graph.db)
 
 # ---- builder ---------------------------------------------------------------
-FROM rust:1.98-bookworm AS builder
+FROM rust:1.99-bookworm AS builder
 
 WORKDIR /build
 

@@ -1,0 +1,6 @@
+# Floor, not a guarantee. A shell that exports RUSTUP_TOOLCHAIN overrides this
+# file; clear that variable (or set it to 1.99.0) for any verification run.
+[toolchain]
+channel = "1.99.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"
