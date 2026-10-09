@@ -41,7 +41,7 @@ SQLite WAL mode + batch prepared statements + rayon parallel parsing.
 cargo install deagle
 ```
 
-Requires Rust 1.98 or newer (the crates are edition 2024).
+Requires Rust 1.99 or newer (the crates are edition 2024).
 
 ## Usage
 
