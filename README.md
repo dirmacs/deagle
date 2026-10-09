@@ -110,6 +110,12 @@ stand behind and exits non-zero *instead of* printing results:
 Without `--require-fresh` the freshness line is advisory: results print
 normally, but any STALE or UNKNOWN row is named on stderr.
 
+`deagle-serve`'s `GET /api/search` answers from the same index and carries
+the same verdict: every result row has a `freshness` field
+(`"fresh"`/`"stale"`/`"unknown"`), and the response body has a `freshness`
+summary naming each distinct cited file — see
+[crates/deagle-server/README.md](crates/deagle-server/README.md).
+
 ## Autonomous agent use cases
 
 Deagle powers code intelligence in autonomous agent sessions using the

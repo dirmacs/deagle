@@ -2,7 +2,8 @@
 //!
 //! Exposes the same capabilities as the CLI via REST endpoints:
 //! - POST /api/map — index a directory
-//! - GET  /api/search?q=name&kind=struct — search entities
+//! - GET  /api/search?q=name&kind=struct — search entities (each result carries
+//!   a `freshness` verdict; the response carries a per-file freshness summary)
 //! - POST /api/sg — structural pattern search
 //! - POST /api/rg — regex text search
 //! - GET  /api/stats — graph statistics
@@ -15,7 +16,7 @@ use axum::{
     response::Json,
     routing::{get, post},
 };
-use deagle_core::GraphDb;
+use deagle_core::{Freshness, FreshnessRow, GraphDb};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -84,6 +85,11 @@ struct SearchQuery {
 struct SearchResponse {
     results: Vec<NodeJson>,
     count: usize,
+    /// One entry per distinct file the result set cites, `None` when nothing
+    /// was found. Answers the question a bare row cannot: whether ANY cited
+    /// file has moved on since `map`. Files are sorted so a `stale` or
+    /// `unknown` entry is never buried under fresh ones.
+    freshness: Option<Vec<FreshnessFileJson>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -93,6 +99,105 @@ struct NodeJson {
     language: String,
     file_path: String,
     line_start: u32,
+    /// Freshness of the cited file: `"fresh"` / `"stale"` / `"unknown"`.
+    /// Derived by re-hashing the file and comparing against the hash the
+    /// index recorded — see `GraphDb::file_freshness`. `unknown` never means
+    /// fresh: a missing hash row is what the zero-node shape looks like.
+    freshness: String,
+}
+
+/// The freshness summary for one cited file.
+#[derive(Debug, Serialize, Deserialize)]
+struct FreshnessFileJson {
+    file_path: String,
+    freshness: String,
+    /// The `file_hashes.indexed_at` timestamp, when a row exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    indexed_at: Option<String>,
+    /// The file's current mtime as RFC 3339, when it could be statted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_mtime: Option<String>,
+}
+
+/// The verdict token served per row and per file. Unlike the CLI — where a
+/// FRESH row's STATE cell stays blank to cut noise — JSON names all three
+/// states explicitly: a machine consumer must never have to read an absent
+/// token as "fresh".
+fn verdict_token(v: Freshness) -> String {
+    match v {
+        Freshness::Fresh => "fresh",
+        Freshness::Stale => "stale",
+        Freshness::CouldNotDetermine => "unknown",
+    }
+    .to_string()
+}
+
+/// Resolve the index-root-relative `stored` path against `root` for hashing,
+/// mirroring the CLI's `resolve_for_hash`: the recorded root is authoritative
+/// (it is where `map` read the file), and with no root recorded the probe
+/// answers could-not-determine rather than guess a filesystem location,
+/// because a guess that misses would manufacture a verdict.
+fn resolve_for_hash(stored: &str, root: Option<&std::path::Path>) -> Option<PathBuf> {
+    let p = std::path::Path::new(stored);
+    if p.is_absolute() {
+        return Some(p.to_path_buf());
+    }
+    root.map(|r| r.join(p))
+}
+
+/// One freshness probe per distinct cited file, never per row: the CLI's
+/// `freshness_for_results` shape, kept identical so the server reuses #22's
+/// mechanism instead of growing a second one. Files a relative path cannot
+/// resolve for (no index root recorded) are `CouldNotDetermine`.
+fn freshness_by_file(db: &GraphDb, results: &[deagle_core::Node]) -> Vec<FreshnessRow> {
+    let root = db
+        .metadata_get(deagle_core::INDEX_ROOT_KEY)
+        .ok()
+        .flatten()
+        .map(PathBuf::from);
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut rows = Vec::new();
+    for node in results {
+        if seen.insert(node.file_path.as_str()) {
+            let row = match resolve_for_hash(&node.file_path, root.as_deref()) {
+                Some(on_disk) => db.file_freshness(&node.file_path, &on_disk),
+                None => FreshnessRow {
+                    stored_path: node.file_path.clone(),
+                    on_disk_path: PathBuf::from(&node.file_path),
+                    verdict: Freshness::CouldNotDetermine,
+                    indexed_at: None,
+                    file_mtime: None,
+                },
+            };
+            rows.push(row);
+        }
+    }
+    rows
+}
+
+/// Render a `SystemTime` as RFC 3339 for the JSON summary. The CLI renders a
+/// human age ("35m ago"); a machine consumer gets the timestamp itself.
+fn rfc3339(t: std::time::SystemTime) -> String {
+    let secs = t
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let (days, rem) = (secs / 86_400, secs % 86_400);
+    let (h, mi, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    // Civil-from-days (Howard Hinnant's algorithm).
+    let z = days as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let (d, m) = (
+        doy - (153 * mp + 2) / 5 + 1,
+        if mp < 10 { mp + 3 } else { mp - 9 },
+    );
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
 }
 
 async fn search(
@@ -104,6 +209,26 @@ async fn search(
         .search_nodes(&params.q)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
+    // Probe before filtering: freshness is a property of the answer the index
+    // gave, not of the client's `kind` filter. One probe per cited file.
+    let probes = freshness_by_file(&db, &results);
+    let mut summary: Vec<FreshnessFileJson> = probes
+        .iter()
+        .map(|r| FreshnessFileJson {
+            file_path: r.stored_path.clone(),
+            freshness: verdict_token(r.verdict),
+            indexed_at: r.indexed_at.clone(),
+            file_mtime: r.file_mtime.map(rfc3339),
+        })
+        .collect();
+    // Fresh rows last: a stale or unknown file must surface at the top of
+    // the summary, not at the mercy of result ordering.
+    summary.sort_by_key(|f| match f.freshness.as_str() {
+        "stale" => 0,
+        "unknown" => 1,
+        _ => 2,
+    });
+
     let filtered: Vec<NodeJson> = results
         .into_iter()
         .filter(|n| {
@@ -112,12 +237,19 @@ async fn search(
                 .as_ref()
                 .is_none_or(|k| n.kind.to_string() == *k)
         })
-        .map(|n| NodeJson {
-            name: n.name,
-            kind: n.kind.to_string(),
-            language: n.language.to_string(),
-            file_path: n.file_path,
-            line_start: n.line_start,
+        .map(|n| {
+            let row = probes
+                .iter()
+                .find(|r| r.stored_path == n.file_path)
+                .expect("every result's file was probed");
+            NodeJson {
+                name: n.name,
+                kind: n.kind.to_string(),
+                language: n.language.to_string(),
+                file_path: n.file_path,
+                line_start: n.line_start,
+                freshness: verdict_token(row.verdict),
+            }
         })
         .collect();
 
@@ -125,6 +257,11 @@ async fn search(
     Ok(Json(SearchResponse {
         results: filtered,
         count,
+        freshness: if summary.is_empty() {
+            None
+        } else {
+            Some(summary)
+        },
     }))
 }
 
@@ -864,5 +1001,186 @@ mod tests {
         let sr: SearchResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(sr.count, 1);
         assert_eq!(sr.results[0].name, "hello");
+    }
+
+    /// The served `/api/search` answer must carry #22's freshness verdict:
+    /// every node names its cited file's state, and the response summary names
+    /// each distinct file once — so the HTTP path can never again answer
+    /// silently from a stale index while the CLI refuses to.
+    ///
+    /// Three fixtures, one per state, because the three states are three
+    /// distinct assertions: a fresh index serves `fresh`; a content edit
+    /// post-index serves `stale` and the summary names the file; the
+    /// zero-node trap (hash row deleted, node kept) serves `unknown` — never
+    /// stale, never fresh-by-default.
+    ///
+    /// Mutation proof: forcing `file_freshness`'s verdict to always-Fresh in
+    /// deagle-core fails exactly the `stale`/`unknown` assertions here and
+    /// leaves `test_search_reports_freshness_fresh` green.
+    fn search_app_with_db(db: GraphDb) -> Router {
+        Router::new()
+            .route("/api/search", get(search))
+            .with_state(Arc::new(AppState {
+                db: Mutex::new(db),
+                root_dir: PathBuf::from("."),
+            }))
+    }
+
+    async fn get_search(app: Router, uri: &str) -> SearchResponse {
+        let resp = app
+            .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), 65536).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    fn fresh_node(name: &str, file_path: &str) -> deagle_core::Node {
+        deagle_core::Node {
+            id: 0,
+            name: name.into(),
+            kind: deagle_core::NodeKind::Function,
+            language: deagle_core::Language::Rust,
+            file_path: file_path.into(),
+            line_start: 1,
+            line_end: 5,
+            content: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_search_reports_freshness_fresh() {
+        let dir = std::env::temp_dir().join(format!("deagle-srv-fresh-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("lib.rs"), "fn alpha() {}\n").unwrap();
+
+        let db = GraphDb::in_memory().unwrap();
+        let root = dir.to_string_lossy();
+        db.metadata_set(deagle_core::INDEX_ROOT_KEY, root.as_ref())
+            .unwrap();
+        db.insert_node(&fresh_node("alpha", "lib.rs")).unwrap();
+        db.store_file_hash("lib.rs", "fn alpha() {}\n").unwrap();
+
+        let sr = get_search(search_app_with_db(db), "/api/search?q=alpha").await;
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(sr.count, 1);
+        assert_eq!(
+            sr.results[0].freshness, "fresh",
+            "a file whose bytes still match the index must serve fresh"
+        );
+        let summary = sr.freshness.expect("a non-empty answer carries a summary");
+        assert_eq!(summary.len(), 1, "one cited file, one summary entry");
+        assert_eq!(summary[0].file_path, "lib.rs");
+        assert_eq!(summary[0].freshness, "fresh");
+    }
+
+    #[tokio::test]
+    async fn test_search_reports_freshness_stale() {
+        let dir = std::env::temp_dir().join(format!("deagle-srv-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("lib.rs"), "fn beta() {}\n").unwrap();
+
+        let db = GraphDb::in_memory().unwrap();
+        let root = dir.to_string_lossy();
+        db.metadata_set(deagle_core::INDEX_ROOT_KEY, root.as_ref())
+            .unwrap();
+        db.insert_node(&fresh_node("beta", "lib.rs")).unwrap();
+        db.store_file_hash("lib.rs", "fn beta() {}\n").unwrap();
+
+        // The staleness: the cited file's content changes AFTER the hash was
+        // recorded — the index still answers from the old bytes.
+        std::fs::write(dir.join("lib.rs"), "fn beta() { todo!() }\n").unwrap();
+
+        let sr = get_search(search_app_with_db(db), "/api/search?q=beta").await;
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(sr.count, 1);
+        assert_eq!(
+            sr.results[0].freshness, "stale",
+            "changed bytes since indexing must serve stale"
+        );
+        let summary = sr.freshness.expect("a non-empty answer carries a summary");
+        assert!(
+            summary
+                .iter()
+                .any(|f| f.file_path == "lib.rs" && f.freshness == "stale"),
+            "the summary must name the stale file, got {summary:?}"
+        );
+        assert!(
+            summary[0].indexed_at.is_some(),
+            "a stored hash row carries its indexed_at"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_reports_freshness_unknown_zero_node_trap() {
+        let dir = std::env::temp_dir().join(format!("deagle-srv-unknown-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("lib.rs"), "fn gamma() {}\n").unwrap();
+
+        let db = GraphDb::in_memory().unwrap();
+        let root = dir.to_string_lossy();
+        db.metadata_set(deagle_core::INDEX_ROOT_KEY, root.as_ref())
+            .unwrap();
+        // The zero-node trap: the node row exists but no hash row was ever
+        // recorded — exactly what a zero-node file looks like, because
+        // zero-node files skip the hash write entirely.
+        db.insert_node(&fresh_node("gamma", "lib.rs")).unwrap();
+        // Never stored: a hash row for this file would defeat the trap.
+
+        let sr = get_search(search_app_with_db(db), "/api/search?q=gamma").await;
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(sr.count, 1);
+        assert_eq!(
+            sr.results[0].freshness, "unknown",
+            "no hash row is unknown — never stale, never fresh-by-default"
+        );
+        let summary = sr.freshness.expect("a non-empty answer carries a summary");
+        assert_eq!(summary[0].freshness, "unknown");
+        assert!(summary[0].indexed_at.is_none(), "there is no row to date");
+    }
+
+    #[tokio::test]
+    async fn test_search_reports_freshness_unknown_deleted_file() {
+        let dir = std::env::temp_dir().join(format!("deagle-srv-gone-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("lib.rs"), "fn delta() {}\n").unwrap();
+
+        let db = GraphDb::in_memory().unwrap();
+        let root = dir.to_string_lossy();
+        db.metadata_set(deagle_core::INDEX_ROOT_KEY, root.as_ref())
+            .unwrap();
+        db.insert_node(&fresh_node("delta", "lib.rs")).unwrap();
+        db.store_file_hash("lib.rs", "fn delta() {}\n").unwrap();
+
+        // The file vanishes after indexing: the comparison cannot run, and an
+        // absent read is not a diff — unknown, not stale.
+        std::fs::remove_file(dir.join("lib.rs")).unwrap();
+
+        let sr = get_search(search_app_with_db(db), "/api/search?q=delta").await;
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(sr.count, 1);
+        assert_eq!(
+            sr.results[0].freshness, "unknown",
+            "an unreadable file must not read as fresh OR stale"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_search_empty_result_has_no_freshness_summary() {
+        let sr = get_search(
+            search_app_with_db(GraphDb::in_memory().unwrap()),
+            "/api/search?q=nothing",
+        )
+        .await;
+        assert_eq!(sr.count, 0);
+        assert!(
+            sr.freshness.is_none(),
+            "an empty answer has no cited files to summarize"
+        );
     }
 }
