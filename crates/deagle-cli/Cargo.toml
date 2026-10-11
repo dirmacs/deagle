@@ -30,4 +30,4 @@ serde_json = { workspace = true }
 # Tests open the fixture database directly (the zero-node-trap fixture deletes
 # a file_hashes row to simulate an unhashable index). Same feature set as
 # deagle-core uses, so no second build of the bundled sqlite.
-rusqlite = { version = "0.34", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
