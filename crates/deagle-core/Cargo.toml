@@ -16,7 +16,7 @@ semantic = ["dep:ares-vector"]
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-rusqlite = { version = "0.34", features = ["bundled"], optional = true }
+rusqlite = { version = "0.40", features = ["bundled"], optional = true }
 ares-vector = { version = "0.1", features = ["serde"], optional = true }
 fuzzy-matcher = "0.3.7"
 sha2 = "0.11.0"
