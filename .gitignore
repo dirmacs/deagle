@@ -1,4 +1,3 @@
 /target
 .deagle/
 *.db
-Cargo.lock
